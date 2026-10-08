@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/walrus",
+    "crates/walx",
+    "crates/walker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/walrus"
+homepage = "https://github.com/OWNER/walrus"
+authors = ["Walrus contributors"]
+
+[workspace.dependencies]
+# Internal
+walrus-fmt = { path = "crates/walrus", version = "0.1.0" }
+
+# Shared external
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+tar = "0.4"
+zstd = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

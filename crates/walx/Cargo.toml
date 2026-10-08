@@ -1,0 +1,20 @@
+[package]
+name = "walx"
+description = "CLI to inspect, extract versions from, and convert .wal / .wbl files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["wal", "cli", "history", "versioning", "document"]
+categories = ["command-line-utilities", "encoding"]
+
+[[bin]]
+name = "walx"
+path = "src/main.rs"
+
+[dependencies]
+walrus-fmt = { workspace = true, features = ["export-html", "export-md", "export-json", "export-csv"] }
+anyhow = { workspace = true }

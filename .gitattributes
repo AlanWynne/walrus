@@ -1,0 +1,21 @@
+# Normalise line endings: store everything as LF in the repository, so the
+# tree is identical on Linux, macOS, and Windows checkouts.
+* text=auto eol=lf
+
+# Explicitly treat known text types as text.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.lock  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+
+# Binary artefacts: never normalise or diff as text.
+*.wal   binary
+*.wbl   binary
+*.png   binary
+*.pdf   binary
+*.zst   binary
+*.gz    binary

@@ -1,0 +1,31 @@
+[package]
+name = "walrus-fmt"
+description = "The .wal / .wbl document-with-history format and reconstruct-to-version engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["wal", "history", "versioning", "document", "time-travel"]
+categories = ["data-structures", "encoding"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tar = { workspace = true }
+zstd = { workspace = true }
+
+[features]
+default = []
+# Export formats are opt-in so a playback-only embedder stays lean.
+export-html = []
+export-md = []
+export-csv = []
+export-json = []
+export-pdf = []
+export-docx = []
+export-all = ["export-html", "export-md", "export-csv", "export-json", "export-pdf", "export-docx"]

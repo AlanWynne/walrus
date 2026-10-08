@@ -1,0 +1,15 @@
+        _____
+     .-'     '-.
+    /   o   o   \
+   |    .---.    |      (((
+   |   ( ~~~ )   |     ~~~~~
+    \   '---'   /    the walrus
+     '-._____.-'
+       || ||
+       || ||     <- tusks
+
+The canonical demo fixture `walrus.wal` is a text document that starts with this
+walrus near the left edge. Each change-log record shifts him one column to the
+right (a splice that deletes the leading spaces and re-inserts them one wider),
+so playing the file forward walks the walrus across the screen, backward returns
+him, and loop makes him pace. See examples/README.md for how it is generated.
