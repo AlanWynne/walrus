@@ -10,3 +10,6 @@
 # Scratch output
 /tmp/
 *.log
+
+# cargo-gate ephemeral artefacts
+/.gate/

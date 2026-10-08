@@ -59,6 +59,9 @@ impl Player {
     }
 
     /// True when there are no change records.
+    // Companion to `len()`; part of the public Player API, not yet called by the
+    // GUI transport. Kept so embedders have the standard len/is_empty pair.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -130,6 +133,8 @@ impl Player {
     }
 
     /// Set the per-step interval (lower is faster). Clamped to a sane minimum.
+    // Public speed control; the GUI speed slider will call this once wired.
+    #[allow(dead_code)]
     pub fn set_step_interval(&mut self, interval: Duration) {
         self.step_interval = interval.max(Duration::from_millis(16));
     }
@@ -221,7 +226,13 @@ mod tests {
 
     #[test]
     fn forward_stops_at_head_without_loop() {
-        let mut m = Mini { index: 1, len: 2, looping: false, dir: Direction::Forward, playing: true };
+        let mut m = Mini {
+            index: 1,
+            len: 2,
+            looping: false,
+            dir: Direction::Forward,
+            playing: true,
+        };
         m.advance(); // 2 (head)
         assert_eq!(m.index, 2);
         m.advance(); // stays, stops
@@ -231,7 +242,13 @@ mod tests {
 
     #[test]
     fn forward_wraps_at_head_with_loop() {
-        let mut m = Mini { index: 2, len: 2, looping: true, dir: Direction::Forward, playing: true };
+        let mut m = Mini {
+            index: 2,
+            len: 2,
+            looping: true,
+            dir: Direction::Forward,
+            playing: true,
+        };
         m.advance();
         assert_eq!(m.index, 0);
         assert!(m.playing);
@@ -239,7 +256,13 @@ mod tests {
 
     #[test]
     fn backward_wraps_at_base_with_loop() {
-        let mut m = Mini { index: 0, len: 2, looping: true, dir: Direction::Backward, playing: true };
+        let mut m = Mini {
+            index: 0,
+            len: 2,
+            looping: true,
+            dir: Direction::Backward,
+            playing: true,
+        };
         m.advance();
         assert_eq!(m.index, 2);
     }

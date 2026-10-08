@@ -52,8 +52,15 @@ fn cmd_info(path: Option<&String>) -> anyhow::Result<()> {
     println!("file:      {path}");
     println!("variant:   {:?}", m.variant);
     println!("spec:      {}", m.spec_version);
-    println!("document:  {} ({}, {})", m.document.name, m.document.mime, m.document.encoding);
-    println!("versions:  0..={} ({} change records)", doc.len(), doc.len());
+    println!(
+        "document:  {} ({}, {})",
+        m.document.name, m.document.mime, m.document.encoding
+    );
+    println!(
+        "versions:  0..={} ({} change records)",
+        doc.len(),
+        doc.len()
+    );
     if !m.checkpoints.is_empty() {
         println!("checkpoints:");
         for cp in &m.checkpoints {

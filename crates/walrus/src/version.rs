@@ -81,7 +81,10 @@ mod tests {
     #[test]
     fn label_resolves_and_rejects_unknown() {
         let m = manifest_with_checkpoints();
-        assert_eq!(resolve(&m, 10, Version::Label("milestone".into())).unwrap(), 4);
+        assert_eq!(
+            resolve(&m, 10, Version::Label("milestone".into())).unwrap(),
+            4
+        );
         assert!(resolve(&m, 10, Version::Label("nope".into())).is_err());
     }
 
