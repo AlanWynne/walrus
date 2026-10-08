@@ -19,8 +19,10 @@ session can pick up without re-discovering it.
 - Container WRITER (`write.rs`): serialise manifest + base + log into zstd(tar).
   Public API: `WalrusFile::new_wal`, `to_bytes`, `write`. Round-trip unit test
   confirms every version index reconstructs byte-identically after write+read.
-- Example `.wal` generator (`crates/walrus/examples/generate_story.rs`) and the
-  committed `examples/walrus-story.wal` narrated title-card fixture.
+- Example `.wal` generators and committed fixtures:
+  - `generate_story.rs` -> `examples/walrus-story.wal` (narrated title card).
+  - `generate_walk.rs` -> `examples/walrus.wal` (the walking-walrus mascot demo;
+    each forward record shifts him one column, self-verified).
 
 ## Stubbed / TODO (intentionally not implemented in the scaffold)
 
@@ -32,10 +34,8 @@ session can pick up without re-discovering it.
 5. Export backends: html/md/json implemented as simple stubs; csv real impl;
    pdf/docx need a chosen crate (feature-gated so they stay optional).
 6. CSV column viewer in `walker` (`View::Csv`): parse + aligned sortable grid.
-7. The walking-walrus `walrus.wal` demo fixture (generator spec in
-   `examples/README.md`). The container writer (item 1) now exists, and a
-   narrated `walrus-story.wal` fixture ships; the column-shifting walrus
-   animation is still to be generated.
+7. (DONE -- see "Done" above) The walking-walrus `walrus.wal` demo fixture:
+   `generate_walk.rs` produces it and `examples/walrus.wal` is committed.
 8. Decide the GUI test approach (egui_kittest mirrors the FFWB convention).
 
 ## Build

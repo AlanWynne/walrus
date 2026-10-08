@@ -33,37 +33,35 @@ log of splices, then `write()` it.
 
 `walrus.wal` is the canonical demo and deterministic playback fixture: an ASCII
 walrus (see `walrus-ascii.txt`) that walks across the screen as the change log
-is replayed. Frame `N` places the walrus at column `N`, so playback is testable
-by asserting the leading-space count at each version index.
-
-### Status
-
-The fixture is NOT committed as a binary yet, because it requires the Walrus
-*container writer*, which is still a stub in `walrus-fmt` (the current crate
-implements the reader and the reconstruct engine; see `FORMAT.md` and the
-`container.rs` TODO). The generator below is the intended producer; wire it up
-when the writer lands.
-
-### Intended generator (pseudocode)
-
-```text
-base    = the ASCII walrus with 0 leading spaces (the ORIGINAL, leftmost frame)
-for col in 1..=WIDTH:
-    record = splice that increases the leading indentation by one column
-    append record to the forward log
-write .wal = zstd(tar{ manifest.json, base, log.jsonl })
-```
+is replayed. The base (version 0) is the walrus at the far left (zero shift);
+each forward record shifts him one column right, so frame `N` is the walrus `N`
+columns across. Playing forward walks him right, backward returns him, and loop
+makes him pace. Playback is testable by asserting the leading-space shift at
+each version index.
 
 Because `.wal` is `original + forward log = current`, the base is the walrus at
-the far left and the head is the walrus at the far right. The matching `.wbl`
-(produced by `walx convert walrus.wal walrus.wbl`) has the rightmost frame as
-its base, so a naive reader of a `.wbl` sees the walrus already arrived.
+the far left and the head is the walrus at the far right. A matching `.wbl` (via
+`walx convert walrus.wal walrus.wbl`, once convert lands) would have the
+rightmost frame as its base, so a naive reader of the `.wbl` sees the walrus
+already arrived.
+
+### Regenerate it
+
+The committed generator is the canonical producer:
+
+```sh
+cargo run -p walrus-fmt --example generate_walk
+```
+
+It builds the base walrus at column 0, appends one forward splice per column of
+travel, writes `examples/walrus.wal`, and self-verifies that the walrus shifted
+the expected number of columns between the base and the head.
 
 ### Playing it
 
 ```sh
-walker            # then File > Open > walrus.wal, press play, toggle loop
-walx info walrus.wal
-walx extract walrus.wal 0   # leftmost frame
-walx extract walrus.wal 20  # 20 columns across
+walker                                 # open walrus.wal, press play, toggle loop
+walx info examples/walrus.wal
+walx extract examples/walrus.wal 0     # leftmost frame
+walx extract examples/walrus.wal 24    # rightmost frame (head)
 ```
