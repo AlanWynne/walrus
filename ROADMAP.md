@@ -16,19 +16,26 @@ session can pick up without re-discovering it.
 - `walker` egui app: open dialog, transport (step/play/pause/direction/loop/
   seek), read-only version display, playback state machine (`player.rs`) with
   unit-tested loop/stop/wrap logic.
+- Container WRITER (`write.rs`): serialise manifest + base + log into zstd(tar).
+  Public API: `WalrusFile::new_wal`, `to_bytes`, `write`. Round-trip unit test
+  confirms every version index reconstructs byte-identically after write+read.
+- Example `.wal` generator (`crates/walrus/examples/generate_story.rs`) and the
+  committed `examples/walrus-story.wal` narrated title-card fixture.
 
 ## Stubbed / TODO (intentionally not implemented in the scaffold)
 
-1. Container WRITER (`container.rs`): serialise manifest + base + log back into
-   zstd(tar). Needed before `walrus.wal` can be generated or any save works.
+1. (DONE -- see "Done" above) Container WRITER: `write.rs` serialises manifest +
+   base + log into zstd(tar); `WalrusFile::new_wal` / `to_bytes` / `write`.
 2. gzip outer codec (reader currently zstd-only; magic sniffing is in place).
 3. `.wal <-> .wbl` conversion (`walx convert`): invert splices, re-base.
 4. Timestamp version addressing (`--at T`), per FORMAT.md section 5.
 5. Export backends: html/md/json implemented as simple stubs; csv real impl;
    pdf/docx need a chosen crate (feature-gated so they stay optional).
 6. CSV column viewer in `walker` (`View::Csv`): parse + aligned sortable grid.
-7. The `walrus.wal` demo fixture (depends on item 1; generator spec in
-   `examples/README.md`).
+7. The walking-walrus `walrus.wal` demo fixture (generator spec in
+   `examples/README.md`). The container writer (item 1) now exists, and a
+   narrated `walrus-story.wal` fixture ships; the column-shifting walrus
+   animation is still to be generated.
 8. Decide the GUI test approach (egui_kittest mirrors the FFWB convention).
 
 ## Build

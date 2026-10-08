@@ -1,5 +1,34 @@
 # Examples
 
+## walrus-story.wal (narrated title-card demo)
+
+`walrus-story.wal` is a ready-to-open `.wal` that plays like film credits: a
+stable ASCII-walrus header with a caption line that is rewritten one frame at a
+time to tell a short story about what Walrus does. Version 0 is the opening
+frame ("a walrus clears his throat..."); the head is the closing bow. Each
+forward change record is a single splice that replaces the whole caption region
+with the next line, so every version is byte-exact and backward playback rewinds
+the narration cleanly.
+
+Try it:
+
+```sh
+walx info examples/walrus-story.wal         # 0..=16, 16 change records
+walx extract examples/walrus-story.wal 0    # opening frame
+walx extract examples/walrus-story.wal 16   # closing frame
+cargo run -p walker                         # then open it, press play, toggle loop
+```
+
+Regenerate it with the committed generator (the canonical producer):
+
+```sh
+cargo run -p walrus-fmt --example generate_story
+```
+
+The generator (`crates/walrus/examples/generate_story.rs`) is also a worked
+example of the container writer: build a `WalrusFile` from a base plus a forward
+log of splices, then `write()` it.
+
 ## walrus.wal (the mascot demo)
 
 `walrus.wal` is the canonical demo and deterministic playback fixture: an ASCII

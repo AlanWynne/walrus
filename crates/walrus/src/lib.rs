@@ -18,9 +18,10 @@
 mod container;
 mod error;
 mod manifest;
-mod record;
 mod reconstruct;
+mod record;
 mod version;
+mod write;
 
 #[cfg(any(
     feature = "export-html",
@@ -66,6 +67,31 @@ impl WalrusFile {
         })
     }
 
+    /// Build a `.wal` file in memory from a base document (the original) and a
+    /// forward change log. The manifest is derived from the log length; adjust
+    /// the returned value's [`WalrusFile::manifest_mut`] for document info or
+    /// checkpoints before writing.
+    ///
+    /// # Errors
+    /// Returns an error only if the derived manifest fails validation.
+    pub fn new_wal(base: impl Into<Vec<u8>>, log: Vec<ChangeRecord>) -> Result<Self> {
+        let base = base.into();
+        let splice_count = log.iter().filter(|r| r.is_splice()).count();
+        let manifest = Manifest::new_wal(splice_count);
+        manifest.validate()?;
+        Ok(Self {
+            manifest,
+            base,
+            log,
+        })
+    }
+
+    /// Mutable access to the manifest, for setting document info, checkpoints,
+    /// `created`, or `generator` before writing.
+    pub fn manifest_mut(&mut self) -> &mut Manifest {
+        &mut self.manifest
+    }
+
     /// The parsed manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
@@ -96,6 +122,17 @@ impl WalrusFile {
     pub fn reconstruct(&self, version: Version) -> Result<Vec<u8>> {
         let index = self.resolve(version)?;
         reconstruct::reconstruct(&self.base, &self.log, index)
+    }
+
+    /// Serialise this file to its compressed container bytes (`zstd(tar{...})`).
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        write::write_container(&self.manifest, &self.base, &self.log)
+    }
+
+    /// Write this file to `path` as a compressed container.
+    pub fn write(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let bytes = self.to_bytes()?;
+        std::fs::write(path, bytes).map_err(WalrusError::Io)
     }
 }
 
@@ -130,5 +167,31 @@ mod tests {
         assert_eq!(doc.reconstruct(Version::Index(0)).unwrap(), b"cat");
         assert_eq!(doc.reconstruct(Version::Index(1)).unwrap(), b"cats");
         assert_eq!(doc.reconstruct(Version::Head).unwrap(), b"cats");
+    }
+
+    #[test]
+    fn write_then_read_round_trips_every_version() {
+        // Build in memory, serialise, read back, and confirm each version index
+        // reconstructs byte-identically through the container boundary.
+        let base = b"cat".to_vec();
+        let log = vec![
+            ChangeRecord::splice(3, 0, "s"),    // "cat" -> "cats"
+            ChangeRecord::splice(0, 0, "the "), // "cats" -> "the cats"
+        ];
+        let original = WalrusFile::new_wal(base, log).unwrap();
+
+        let bytes = original.to_bytes().unwrap();
+        let reopened = WalrusFile::read(&bytes).unwrap();
+
+        assert_eq!(reopened.len(), 2);
+        assert_eq!(reopened.manifest().variant, Variant::Wal);
+        for index in 0..=reopened.len() {
+            assert_eq!(
+                reopened.reconstruct(Version::Index(index)).unwrap(),
+                original.reconstruct(Version::Index(index)).unwrap(),
+                "version {index} differs after a write/read round-trip"
+            );
+        }
+        assert_eq!(reopened.reconstruct(Version::Head).unwrap(), b"the cats");
     }
 }
