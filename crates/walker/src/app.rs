@@ -148,7 +148,11 @@ impl WalkerApp {
 }
 
 impl eframe::App for WalkerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    // eframe 0.36 split the old `update(ctx, frame)` into a non-painting
+    // `logic(ctx, frame)` pre-pass and a painting `ui(ui, frame)` pass. Playback
+    // time-advance and repaint scheduling (no painting) live in `logic`; all
+    // panel drawing lives in `ui`.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Advance playback by real elapsed time.
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_frame);
@@ -171,8 +175,10 @@ impl eframe::App for WalkerApp {
                 }
             }
         }
+    }
 
-        egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("menu").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open...").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
@@ -189,11 +195,11 @@ impl eframe::App for WalkerApp {
             });
         });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.label(&self.status);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.view {
+        egui::CentralPanel::default().show(ui, |ui| match self.view {
             View::Player => {
                 let changed = self.transport_controls(ui);
                 if changed {

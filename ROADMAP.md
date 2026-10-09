@@ -16,6 +16,11 @@ session can pick up without re-discovering it.
 - `walker` egui app: open dialog, transport (step/play/pause/direction/loop/
   seek), read-only version display, playback state machine (`player.rs`) with
   unit-tested loop/stop/wrap logic.
+- GUI test approach decided and wired: egui/eframe/egui_kittest bumped to 0.36;
+  `egui_kittest 0.36` is the headless GUI harness (walker `[dev-dependencies]`).
+  A real harness test (`crates/walker/tests/harness.rs`) drives a transport
+  button and asserts player state. This raised the workspace MSRV to 1.95
+  (egui 0.36 forcing crate).
 - Container WRITER (`write.rs`): serialise manifest + base + log into zstd(tar).
   Public API: `WalrusFile::new_wal`, `to_bytes`, `write`. Round-trip unit test
   confirms every version index reconstructs byte-identically after write+read.
@@ -36,11 +41,15 @@ session can pick up without re-discovering it.
 6. CSV column viewer in `walker` (`View::Csv`): parse + aligned sortable grid.
 7. (DONE -- see "Done" above) The walking-walrus `walrus.wal` demo fixture:
    `generate_walk.rs` produces it and `examples/walrus.wal` is committed.
-8. Decide the GUI test approach (egui_kittest mirrors the FFWB convention).
+8. (DONE -- see "Done" above) GUI test approach: egui_kittest 0.36 is the chosen
+   headless harness (mirrors the FFWB convention), enabled by the egui 0.36
+   upgrade.
 
 ## Build
 
-First build will resolve egui/eframe 0.28 and the zstd/tar crates. Verify with:
+The GUI stack is egui/eframe 0.36 (with egui_kittest 0.36 as a walker
+dev-dependency). egui 0.36 raised the workspace MSRV to 1.95 (`rust-version` in
+`[workspace.package]`); edition stays 2021. Verify with:
 
 ```sh
 cargo build

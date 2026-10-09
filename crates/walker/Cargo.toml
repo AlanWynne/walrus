@@ -19,7 +19,12 @@ path = "src/main.rs"
 walrus-fmt = { workspace = true, features = ["export-all"] }
 anyhow = { workspace = true }
 
-# GUI stack. Pinned to a recent egui/eframe; adjust when first building.
-eframe = "0.28"
-egui = "0.28"
+# GUI stack. Pinned to egui/eframe 0.36 (raised the workspace MSRV to 1.95).
+eframe = "0.36"
+egui = "0.36"
 rfd = "0.14"            # native open/save file dialogs
+
+[dev-dependencies]
+# Headless GUI test harness. Default (egui) harness drives a Ui closure; the
+# eframe feature is not needed for the transport-control harness tests.
+egui_kittest = "0.36"
