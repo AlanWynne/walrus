@@ -21,7 +21,12 @@ use scraper::Html;
 /// contract.
 pub fn to_html(doc: &[u8], mime: &str) -> crate::Result<Vec<u8>> {
     let text = String::from_utf8_lossy(doc);
-    let normalised = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let normalised = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
 
     let body = if matches!(normalised.as_str(), "text/markdown" | "text/x-markdown") {
         render_markdown(&text)

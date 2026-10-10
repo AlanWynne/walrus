@@ -28,22 +28,25 @@ const LINE_HEIGHT_MM: f32 = 6.0;
 pub fn to_pdf(doc: &[u8], mime: &str) -> crate::Result<Vec<u8>> {
     let text = extract_text(doc, mime);
 
-    let (pdf, page1, layer1) =
-        PdfDocument::new("Walrus export", Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
-    let font = pdf
-        .add_builtin_font(BuiltinFont::Helvetica)
-        .map_err(|e| crate::WalrusError::Export {
-            backend: "pdf",
-            reason: e.to_string(),
-        })?;
+    let (pdf, page1, layer1) = PdfDocument::new(
+        "Walrus export",
+        Mm(PAGE_WIDTH_MM),
+        Mm(PAGE_HEIGHT_MM),
+        "Layer 1",
+    );
+    let font =
+        pdf.add_builtin_font(BuiltinFont::Helvetica)
+            .map_err(|e| crate::WalrusError::Export {
+                backend: "pdf",
+                reason: e.to_string(),
+            })?;
 
     let mut layer = pdf.get_page(page1).get_layer(layer1);
     let mut y = PAGE_HEIGHT_MM - MARGIN_MM;
 
     for line in text.lines() {
         if y < MARGIN_MM {
-            let (page, new_layer) =
-                pdf.add_page(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
+            let (page, new_layer) = pdf.add_page(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
             layer = pdf.get_page(page).get_layer(new_layer);
             y = PAGE_HEIGHT_MM - MARGIN_MM;
         }
@@ -54,10 +57,11 @@ pub fn to_pdf(doc: &[u8], mime: &str) -> crate::Result<Vec<u8>> {
     let mut buffer = Vec::new();
     {
         let mut writer = BufWriter::new(&mut buffer);
-        pdf.save(&mut writer).map_err(|e| crate::WalrusError::Export {
-            backend: "pdf",
-            reason: e.to_string(),
-        })?;
+        pdf.save(&mut writer)
+            .map_err(|e| crate::WalrusError::Export {
+                backend: "pdf",
+                reason: e.to_string(),
+            })?;
     }
     Ok(buffer)
 }

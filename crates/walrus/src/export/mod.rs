@@ -146,7 +146,12 @@ mod tests {
 
     #[test]
     fn offered_formats_always_includes_original_and_plaintext() {
-        for mime in ["text/plain", "text/csv", "text/markdown", "application/json"] {
+        for mime in [
+            "text/plain",
+            "text/csv",
+            "text/markdown",
+            "application/json",
+        ] {
             let formats = offered_formats(mime);
             assert!(formats.contains(&ExportFormat::Original), "mime {mime}");
             assert!(formats.contains(&ExportFormat::PlainText), "mime {mime}");

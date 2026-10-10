@@ -32,10 +32,12 @@ pub fn to_csv(doc: &[u8]) -> crate::Result<Vec<u8>> {
             })?;
     }
 
-    let inner = writer.into_inner().map_err(|e| crate::WalrusError::Export {
-        backend: "csv",
-        reason: e.to_string(),
-    })?;
+    let inner = writer
+        .into_inner()
+        .map_err(|e| crate::WalrusError::Export {
+            backend: "csv",
+            reason: e.to_string(),
+        })?;
     Ok(inner)
 }
 

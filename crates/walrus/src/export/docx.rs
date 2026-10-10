@@ -68,8 +68,7 @@ mod tests {
         let mut i = 0;
         while i + 46 <= bytes.len() {
             if bytes[i..i + 4] == sig {
-                let name_len =
-                    u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
+                let name_len = u16::from_le_bytes([bytes[i + 28], bytes[i + 29]]) as usize;
                 let start = i + 46;
                 let end = start + name_len;
                 if end <= bytes.len() {
