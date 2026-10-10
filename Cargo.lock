@@ -4194,8 +4194,10 @@ dependencies = [
  "pulldown-cmark",
  "rfd",
  "serde_json",
+ "tar",
  "tempfile",
  "walrus-fmt",
+ "zstd",
 ]
 
 [[package]]

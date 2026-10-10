@@ -1,0 +1,426 @@
+//! The `WalrusSource` adapter: a [`HistorySource`] over a multi-file
+//! `walrus-fmt` [`Archive`] (FR-K2).
+//!
+//! This is the ONE module in `walker` allowed to name `walrus_fmt` archive
+//! types. Everything else in the GUI depends only on the format-agnostic
+//! [`HistorySource`] trait (`source/mod.rs`), so swapping or adding a backend
+//! touches this file alone (FR-K1 AC2 boundary).
+//!
+//! Index semantics are shared end-to-end: walker's [`VersionId::Index`] and
+//! `walrus_fmt`'s [`Version::Index`] both put the CURRENT version at index 0 and
+//! the ORIGINAL at the file's splice `count`, for both the forward (`.wal`) and
+//! reverse (`.wbl`) directions (FORMAT.md section 5). The index therefore passes
+//! straight through without remapping.
+
+use anyhow::{Context, Result};
+use walrus_fmt::{Archive, FileId, Version};
+
+use super::{FileRef, HistorySource, VersionId, VersionMeta};
+
+// === WalrusSource =======================================================
+
+/// A read-only [`HistorySource`] backed by an owned `walrus-fmt` [`Archive`].
+///
+/// Open one with [`WalrusSource::open`]. The archive's manifest `files` array is
+/// the authoritative directory; this adapter maps each tracked file's 0-based
+/// manifest position to the stable [`FileId`] the archive reconstructs against,
+/// so a [`FileRef::id`] round-trips to the right file.
+#[derive(Debug)]
+pub struct WalrusSource {
+    archive: Archive,
+    /// Archive [`FileId`]s indexed by 0-based manifest position. A
+    /// [`FileRef::id`] is an index into this vector; the value is the archive id
+    /// used to look the file up for reconstruction and metadata.
+    file_ids: Vec<FileId>,
+}
+
+impl WalrusSource {
+    /// Open a `.wal` or `.wbl` archive from `path`.
+    ///
+    /// # Errors
+    /// Returns an error (with context naming the path) if the archive cannot be
+    /// read: an unknown codec, a missing or invalid manifest, or a malformed
+    /// per-file base/`.wchg` member.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<WalrusSource> {
+        let path = path.as_ref();
+        let archive = Archive::open(path)
+            .with_context(|| format!("opening Walrus archive {}", path.display()))?;
+        let file_ids = archive
+            .files()
+            .map(|tracked| FileId::from(tracked.id.as_str()))
+            .collect();
+        Ok(WalrusSource { archive, file_ids })
+    }
+
+    /// The archive [`FileId`] for a [`FileRef`], or `None` if the ref's id is
+    /// outside the manifest range (a stale or foreign ref).
+    fn file_id(&self, f: &FileRef) -> Option<&FileId> {
+        self.file_ids.get(f.id())
+    }
+
+    /// The splice count (far index = the original) for the tracked file at
+    /// 0-based manifest position `index`, or `None` if out of range. The count
+    /// is read from the tracked file's own version bookkeeping, which the reader
+    /// derives from its `.wchg`.
+    fn splice_count(&self, index: usize) -> Option<usize> {
+        self.archive.files().nth(index).map(|t| t.versions.count)
+    }
+}
+
+// === HistorySource ======================================================
+
+impl HistorySource for WalrusSource {
+    fn files(&self) -> Vec<FileRef> {
+        self.archive
+            .files()
+            .enumerate()
+            .map(|(index, tracked)| FileRef::new(index, tracked.name.as_str()))
+            .collect()
+    }
+
+    fn versions(&self, f: &FileRef) -> Vec<VersionId> {
+        // Valid indices are [0, count] INCLUSIVE: 0 is current, count is the
+        // original. An out-of-range ref yields no versions.
+        match self.splice_count(f.id()) {
+            Some(count) => (0..=count).map(VersionId::Index).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn reconstruct(&self, f: &FileRef, v: &VersionId) -> Result<Vec<u8>> {
+        let file_id = self
+            .file_id(f)
+            .ok_or_else(|| anyhow::anyhow!("no tracked file for id {}", f.id()))?;
+        let VersionId::Index(index) = v;
+        // Index semantics are identical across the two layers (0 = current,
+        // count = original), so the index passes straight through.
+        self.archive
+            .reconstruct(file_id, Version::Index(*index))
+            .with_context(|| format!("reconstructing {} at version index {}", f.name(), index))
+    }
+
+    fn metadata(&self, f: &FileRef, v: &VersionId) -> VersionMeta {
+        let VersionId::Index(index) = v;
+        metadata_for(&self.archive, f.id(), *index)
+    }
+
+    fn content_hint(&self, f: &FileRef) -> (String, String) {
+        match self.archive.files().nth(f.id()) {
+            Some(tracked) => (tracked.mime.clone(), tracked.name.clone()),
+            None => (String::new(), String::new()),
+        }
+    }
+}
+
+// === metadata mapping ===================================================
+
+/// Build the [`VersionMeta`] for the tracked file at 0-based manifest position
+/// `file_index` at version `index` (0 = current, count = original).
+///
+/// - `label`: the label of a checkpoint whose index equals `index`, else the
+///   index rendered as a string (a sensible, stable default).
+/// - `timestamp`: epoch seconds parsed from the `ts` of the splice record that
+///   produced this version, when present and in the fixed ISO-8601 shape.
+///   Index 0 (current) uses the last splice; the original end has no record and
+///   so no timestamp.
+/// - `author`: always `None` -- a change record carries no author field in the
+///   0.1 format (`record.rs`), so there is nothing to surface.
+fn metadata_for(archive: &Archive, file_index: usize, index: usize) -> VersionMeta {
+    let Some(tracked) = archive.files().nth(file_index) else {
+        return empty_meta(index);
+    };
+    let label = tracked
+        .checkpoints
+        .iter()
+        .find(|c| c.index == index)
+        .map(|c| c.label.clone())
+        .unwrap_or_else(|| index.to_string());
+
+    let timestamp = record_timestamp(archive, &tracked.id, tracked.versions.count, index);
+
+    VersionMeta {
+        label,
+        timestamp,
+        author: None,
+    }
+}
+
+/// A default [`VersionMeta`] (index as label, no timestamp/author) for an
+/// out-of-range file.
+fn empty_meta(index: usize) -> VersionMeta {
+    VersionMeta {
+        label: index.to_string(),
+        timestamp: None,
+        author: None,
+    }
+}
+
+/// The epoch-seconds timestamp for the splice that produced version `index`.
+///
+/// FORMAT.md 4.1: the `i`-th splice (1-based, oldest step first) yields the
+/// forward version whose canonical index is `count - i`. So version `index` was
+/// produced by splice ordinal `count - index`; ordinal 0 is the original base,
+/// which no record produced, so it has no timestamp. Records that lack a `ts` or
+/// carry one outside the fixed ISO-8601 shape yield `None`.
+fn record_timestamp(archive: &Archive, id: &str, count: usize, index: usize) -> Option<i64> {
+    if index >= count {
+        // index == count is the original (no producing record); index > count is
+        // out of range. Either way there is no record timestamp.
+        return None;
+    }
+    let ordinal = count - index; // 1-based splice ordinal that produced `index`.
+    let records = archive.records(id)?;
+    let record = nth_splice(records, ordinal)?;
+    record.ts.as_deref().and_then(parse_iso_epoch)
+}
+
+/// The `n`-th splice record (1-based) in log order, skipping checkpoints.
+fn nth_splice(records: &[walrus_fmt::ChangeRecord], n: usize) -> Option<&walrus_fmt::ChangeRecord> {
+    records
+        .iter()
+        .filter(|r| r.is_splice())
+        .nth(n.checked_sub(1)?)
+}
+
+// === timestamp parsing ==================================================
+
+/// Parse the fixed ISO-8601 UTC shape `YYYY-MM-DDThh:mm:ssZ` into epoch seconds.
+///
+/// This mirrors the strict, dependency-free parser the library uses internally
+/// for `Timestamp` addressing (that parser is crate-private, so the adapter
+/// re-implements the same fixed shape here rather than pulling in a date crate).
+/// It accepts ONLY the exact 20-char shape the writer emits and returns `None`
+/// for anything else.
+fn parse_iso_epoch(ts: &str) -> Option<i64> {
+    let bytes = ts.as_bytes();
+    if bytes.len() != 20 {
+        return None;
+    }
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return None;
+    }
+    let year = parse_digits(&bytes[0..4])?;
+    let month = parse_digits(&bytes[5..7])?;
+    let day = parse_digits(&bytes[8..10])?;
+    let hour = parse_digits(&bytes[11..13])?;
+    let minute = parse_digits(&bytes[14..16])?;
+    let second = parse_digits(&bytes[17..19])?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Parse an ASCII digit run into an `i64`; `None` if any byte is not a digit.
+fn parse_digits(bytes: &[u8]) -> Option<i64> {
+    let mut value: i64 = 0;
+    for &b in bytes {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value * 10 + i64::from(b - b'0');
+    }
+    Some(value)
+}
+
+/// Days since the Unix epoch for a proleptic-Gregorian civil date
+/// (Howard Hinnant's days_from_civil), kept branch-light.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+// === Tests ==============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use walrus_fmt::{ChangeRecord, Direction, Manifest, TrackedFile, Variant, WchgHeader};
+
+    /// Build the compressed container bytes for a single forward tracked file,
+    /// so the unit tests can open a real `WalrusSource` without the integration
+    /// fixture builder.
+    fn single_forward_container(
+        id: &str,
+        name: &str,
+        base: &[u8],
+        records: &[ChangeRecord],
+    ) -> Vec<u8> {
+        let count = records.iter().filter(|r| r.is_splice()).count();
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.files.push(TrackedFile::new_with_direction(
+            id,
+            name,
+            Direction::Forward,
+            count,
+        ));
+
+        let header = WchgHeader::new(Direction::Forward, 0, name, "utf-8", count);
+        let mut wchg = serde_json::to_string(&header).expect("header");
+        wchg.push('\n');
+        for record in records {
+            wchg.push_str(&serde_json::to_string(record).expect("record"));
+            wchg.push('\n');
+        }
+
+        let mut builder = tar::Builder::new(Vec::new());
+        append(
+            &mut builder,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).expect("manifest"),
+        );
+        append(&mut builder, &format!("files/{id}/base"), base);
+        append(
+            &mut builder,
+            &format!("files/{id}/{name}.wchg"),
+            wchg.as_bytes(),
+        );
+        let tar_bytes = builder.into_inner().expect("tar");
+        zstd::stream::encode_all(&tar_bytes[..], 19).expect("zstd")
+    }
+
+    fn append(builder: &mut tar::Builder<Vec<u8>>, path: &str, data: &[u8]) {
+        let mut header = tar::Header::new_ustar();
+        header.set_path(path).expect("path");
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        builder.append(&header, data).expect("append");
+    }
+
+    /// Open a `WalrusSource` over an in-memory container by writing it to a
+    /// tempdir first (there is no in-memory `WalrusSource` constructor).
+    fn source_from(bytes: &[u8], name: &str) -> (tempfile::TempDir, WalrusSource) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("write");
+        let source = WalrusSource::open(&path).expect("open");
+        (dir, source)
+    }
+
+    #[test]
+    fn file_ref_id_round_trips_to_the_archive_file_id() {
+        // Two files: the FileRef id (0-based manifest position) must select the
+        // matching archive file for reconstruction.
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.files.push(TrackedFile::new_with_direction(
+            "a0",
+            "a.txt",
+            Direction::Forward,
+            1,
+        ));
+        manifest.files.push(TrackedFile::new_with_direction(
+            "b1",
+            "b.txt",
+            Direction::Forward,
+            0,
+        ));
+
+        // Build the two-file container by hand (base + one splice for a0).
+        let mut builder = tar::Builder::new(Vec::new());
+        append(
+            &mut builder,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).expect("m"),
+        );
+        let ha = WchgHeader::new(Direction::Forward, 0, "a.txt", "utf-8", 1);
+        let mut wa = serde_json::to_string(&ha).expect("ha");
+        wa.push('\n');
+        wa.push_str(&serde_json::to_string(&ChangeRecord::splice(1, 0, "X")).expect("rec"));
+        wa.push('\n');
+        append(&mut builder, "files/a0/base", b"a");
+        append(&mut builder, "files/a0/a.txt.wchg", wa.as_bytes());
+        let hb = WchgHeader::new(Direction::Forward, 0, "b.txt", "utf-8", 0);
+        let mut wb = serde_json::to_string(&hb).expect("hb");
+        wb.push('\n');
+        append(&mut builder, "files/b1/base", b"b");
+        append(&mut builder, "files/b1/b.txt.wchg", wb.as_bytes());
+        let tar_bytes = builder.into_inner().expect("tar");
+        let bytes = zstd::stream::encode_all(&tar_bytes[..], 19).expect("zstd");
+
+        let (_dir, source) = source_from(&bytes, "two.wal");
+        let files = source.files();
+        assert_eq!(files[0].id(), 0);
+        assert_eq!(files[1].id(), 1);
+        // id 0 is "a.txt": current (index 0) is "aX", original (index 1) is "a".
+        assert_eq!(
+            source
+                .reconstruct(&files[0], &VersionId::Index(0))
+                .expect("cur"),
+            b"aX"
+        );
+        assert_eq!(
+            source
+                .reconstruct(&files[0], &VersionId::Index(1))
+                .expect("orig"),
+            b"a"
+        );
+        // id 1 is "b.txt": a single version (base only).
+        assert_eq!(
+            source
+                .reconstruct(&files[1], &VersionId::Index(0))
+                .expect("b cur"),
+            b"b"
+        );
+    }
+
+    #[test]
+    fn content_hint_returns_the_tracked_mime_and_name() {
+        let bytes = single_forward_container("f0", "notes.txt", b"hi", &[]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let (mime, name) = source.content_hint(&source.files()[0]);
+        assert_eq!(name, "notes.txt");
+        // TrackedFile::new_with_direction defaults the mime to text/plain.
+        assert_eq!(mime, "text/plain");
+    }
+
+    #[test]
+    fn metadata_label_defaults_to_the_index_when_no_checkpoint_matches() {
+        let records = [ChangeRecord::splice(2, 0, "!")];
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let meta = source.metadata(&source.files()[0], &VersionId::Index(1));
+        assert_eq!(meta.label, "1");
+        assert_eq!(meta.author, None);
+    }
+
+    #[test]
+    fn metadata_timestamp_comes_from_the_producing_splice_record() {
+        // One splice (count = 1) carrying a timestamp. Index 0 (current) is
+        // produced by splice ordinal count - 0 = 1, so it carries that ts.
+        let mut rec = ChangeRecord::splice(2, 0, "!");
+        rec.ts = Some("1970-01-01T00:00:00Z".to_string());
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &[rec]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+
+        let current = source.metadata(&source.files()[0], &VersionId::Index(0));
+        assert_eq!(current.timestamp, Some(0));
+
+        // The original end (index == count) has no producing record, so none.
+        let original = source.metadata(&source.files()[0], &VersionId::Index(1));
+        assert_eq!(original.timestamp, None);
+    }
+
+    #[test]
+    fn parse_iso_epoch_accepts_the_fixed_shape_and_rejects_others() {
+        assert_eq!(parse_iso_epoch("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso_epoch("2026-10-08T12:00:00Z"), Some(1_791_460_800));
+        assert_eq!(parse_iso_epoch(""), None);
+        assert_eq!(parse_iso_epoch("2026-10-08 12:00:00Z"), None);
+        assert_eq!(parse_iso_epoch("2026-13-08T12:00:00Z"), None);
+    }
+}

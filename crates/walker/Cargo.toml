@@ -47,5 +47,11 @@ serde_json = { workspace = true }
 # Headless GUI test harness. Default (egui) harness drives a Ui closure; the
 # eframe feature is not needed for the transport-control harness tests.
 egui_kittest = "0.36"
-# Temp dirs for the section 8 integration round-trip (on-disk export assertions).
+# Temp dirs for the section 8 integration round-trip (on-disk export assertions)
+# and the FR-K2 WalrusSource fixtures written to disk.
 tempfile = "3"
+# The FR-K2 integration test assembles real multi-file .wal/.wbl containers in
+# memory (ustar tar + zstd) from the library's public manifest types, mirroring
+# crates/walrus/tests/archive_read.rs, rather than hand-rolling container bytes.
+tar = { workspace = true }
+zstd = { workspace = true }

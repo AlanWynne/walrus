@@ -12,6 +12,12 @@
 
 use anyhow::Result;
 
+// The one adapter allowed to touch `walrus_fmt` (FR-K2). Re-exported so callers
+// use `source::WalrusSource` without learning the module layout. This module's
+// own signatures stay format-agnostic; only `walrus.rs` names archive types.
+mod walrus;
+pub use walrus::WalrusSource;
+
 /// Identifies a specific version of a tracked file.
 ///
 /// Index semantics (locked format decision): index 0 is the CURRENT version
