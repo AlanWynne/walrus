@@ -11,8 +11,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.95" # raised to 1.95: egui 0.36 MSRV
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/OWNER/walrus"
-homepage = "https://github.com/OWNER/walrus"
+repository = "https://github.com/AlanWynne/walrus"
+homepage = "https://github.com/AlanWynne/walrus"
 authors = ["Walrus contributors"]
 
 [workspace.dependencies]

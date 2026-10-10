@@ -23,4 +23,4 @@ See `ROADMAP.md` for the honest done-vs-stubbed state. Notably: the container
 writer, gzip codec support, `.wal <-> .wbl` conversion, timestamp addressing,
 the export backends, the CSV viewer, and the `walrus.wal` demo fixture.
 
-[Unreleased]: https://github.com/OWNER/walrus/commits/main
+[Unreleased]: https://github.com/AlanWynne/walrus/commits/main

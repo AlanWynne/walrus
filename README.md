@@ -63,7 +63,7 @@ They are inter-convertible; `walrus convert` performs the conversion.
 
 ```toml
 [dependencies]
-walrus-fmt = { git = "https://github.com/OWNER/walrus" }
+walrus-fmt = { git = "https://github.com/AlanWynne/walrus" }
 ```
 
 ```rust

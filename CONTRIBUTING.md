@@ -6,7 +6,7 @@ in `FORMAT.md` is a 0.1 draft and may change before 1.0.
 ## Getting started
 
 ```sh
-git clone https://github.com/OWNER/walrus
+git clone https://github.com/AlanWynne/walrus
 cd walrus
 cargo build
 cargo test
