@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod archive;
 mod container;
 mod error;
 mod manifest;
@@ -26,6 +27,7 @@ mod write;
 
 pub mod export;
 
+pub use archive::{Archive, FileId};
 pub use error::{Result, WalrusError};
 pub use manifest::{
     Checkpoint, FileAttributes, Manifest, RebaseInfo, TrackedFile, Variant, Versions,

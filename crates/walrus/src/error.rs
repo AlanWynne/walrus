@@ -21,6 +21,33 @@ pub enum WalrusError {
     #[error("missing required container member: {0}")]
     MissingMember(&'static str),
 
+    /// A tracked file's `files/<id>/base` member was absent from the container.
+    #[error("missing base member for tracked file '{id}'")]
+    BaseMissing {
+        /// The tracked-file id whose base member was missing.
+        id: String,
+    },
+
+    /// A tracked file's `files/<id>/<name>.wchg` member was absent.
+    #[error("missing .wchg member for tracked file '{id}'")]
+    WchgMissing {
+        /// The tracked-file id whose `.wchg` member was missing.
+        id: String,
+    },
+
+    /// A record line in a specific file's `.wchg` failed to parse (or the line
+    /// framing was malformed, e.g. a CRLF terminator or non-UTF-8 bytes).
+    #[error("invalid .wchg record for file '{id}' on line {line}: {reason}")]
+    Wchg {
+        /// The owning tracked-file id.
+        id: String,
+        /// Header-adjusted line number (the first record line is line 2); a
+        /// value of 0 denotes a stream-level fault (e.g. non-UTF-8 bytes).
+        line: usize,
+        /// Human-readable reason.
+        reason: String,
+    },
+
     /// The manifest failed to parse or was structurally invalid.
     #[error("invalid manifest: {0}")]
     Manifest(String),
