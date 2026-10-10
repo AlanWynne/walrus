@@ -10,12 +10,15 @@
 //! The native file-open path (`rfd::FileDialog`) stays MANUAL: it opens an
 //! OS-native dialog that cannot be driven by a headless accesskit harness.
 
+use std::time::Duration;
+
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use walrus_fmt::{ChangeRecord, WalrusFile};
 
 use walker::player::Player;
+use walker::transport;
 
 /// Build a deterministic in-memory player with a known number of versions.
 ///
@@ -76,5 +79,49 @@ fn step_forward_button_advances_version_index_headless() {
     assert!(
         harness.query_by_label("version 1").is_some(),
         "the version label re-rendered to the advanced index"
+    );
+}
+
+/// Clicking a speed preset drives the player's model interval through the real
+/// `transport::set_speed_multiplier`, asserted headlessly on model state (not
+/// pixels). 4x over the 400 ms base is a 100 ms interval.
+#[test]
+fn speed_preset_button_drives_model_interval_headless() {
+    let player = player_with_three_versions();
+    assert_eq!(
+        player.step_interval(),
+        Duration::from_millis(400),
+        "player starts at the 400 ms (1x) base interval"
+    );
+
+    // The ui closure renders a real "4x" speed preset button wired to the
+    // transport speed setter, plus a label echoing the model interval so the
+    // test can assert on rendered state too.
+    let mut harness = Harness::new_ui_state(
+        |ui, player: &mut Player| {
+            if ui.button("4x").clicked() {
+                transport::set_speed_multiplier(player, 4.0);
+            }
+            ui.label(format!("interval {}ms", player.step_interval().as_millis()));
+        },
+        player,
+    );
+
+    assert!(
+        harness.query_by_label("interval 400ms").is_some(),
+        "initial frame shows the 400 ms base interval"
+    );
+
+    harness.get_by_label("4x").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().step_interval(),
+        Duration::from_millis(100),
+        "clicking '4x' set the model interval to 100 ms"
+    );
+    assert!(
+        harness.query_by_label("interval 100ms").is_some(),
+        "the interval label re-rendered to 100 ms"
     );
 }

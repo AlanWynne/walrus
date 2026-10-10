@@ -59,4 +59,13 @@ pub enum WalrusError {
     /// JSON (de)serialisation failure.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// An export backend failed to produce output.
+    #[error("export failed ({backend}): {reason}")]
+    Export {
+        /// The backend that failed (e.g. "csv", "pdf", "docx").
+        backend: &'static str,
+        /// Human-readable reason.
+        reason: String,
+    },
 }

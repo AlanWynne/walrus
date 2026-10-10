@@ -86,6 +86,16 @@ impl Player {
         self.file.reconstruct(Version::Index(self.index))
     }
 
+    /// The manifest of the opened file (for document name/MIME and variant).
+    pub fn manifest(&self) -> &walrus_fmt::Manifest {
+        self.file.manifest()
+    }
+
+    /// The variant (`wal` / `wbl`) of the opened file.
+    pub fn variant(&self) -> walrus_fmt::Variant {
+        self.file.manifest().variant
+    }
+
     /// Jump directly to a version index (clamped to range).
     pub fn seek(&mut self, index: usize) {
         self.index = index.min(self.len);
@@ -133,10 +143,14 @@ impl Player {
     }
 
     /// Set the per-step interval (lower is faster). Clamped to a sane minimum.
-    // Public speed control; the GUI speed slider will call this once wired.
-    #[allow(dead_code)]
+    // Wired to the transport speed control (see `transport::set_speed_multiplier`).
     pub fn set_step_interval(&mut self, interval: Duration) {
         self.step_interval = interval.max(Duration::from_millis(16));
+    }
+
+    /// The current per-step interval (companion to `set_step_interval`).
+    pub fn step_interval(&self) -> Duration {
+        self.step_interval
     }
 
     /// Advance the player by the elapsed wall-clock time. Call once per frame.
@@ -188,6 +202,7 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use walrus_fmt::ChangeRecord;
 
     // The stepping/loop logic is pure arithmetic on `index`/`len`; validate it
     // without needing a real file by testing a detached mini state machine that
@@ -252,6 +267,16 @@ mod tests {
         m.advance();
         assert_eq!(m.index, 0);
         assert!(m.playing);
+    }
+
+    #[test]
+    fn set_step_interval_clamps_sub_sixteen_millis_to_sixteen() {
+        let base = b"walrus".to_vec();
+        let log = vec![ChangeRecord::splice(0, 0, "a")];
+        let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid in-memory file");
+        let mut player = Player::new(file);
+        player.set_step_interval(Duration::from_millis(1));
+        assert_eq!(player.step_interval(), Duration::from_millis(16));
     }
 
     #[test]

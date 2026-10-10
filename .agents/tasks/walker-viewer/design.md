@@ -479,7 +479,7 @@ a version and writes those bytes under that name.
 | Markdown | `export-md`   | `pulldown-cmark = "0.11"`                               | 1.75 / see 7.3 |
 | CSV      | `export-csv`  | `csv = "1.3"`                                           | 1.75          |
 | JSON     | `export-json` | `serde_json` (already a non-optional dep)              | 1.75          |
-| PDF      | `export-pdf`  | `genpdf = "0.2"` PREFERRED; `printpdf = "0.7"` fallback | see 7.3       |
+| PDF      | `export-pdf`  | `printpdf = "0.7"` CHOSEN (genpdf 0.2 needs on-disk font files) | see 7.3       |
 | DOCX     | `export-docx` | `docx-rs = "0.4"`                                       | see 7.3       |
 
 Each `Cargo.toml` dependency is `optional = true`, pulled in by its feature:
@@ -489,7 +489,7 @@ Each `Cargo.toml` dependency is `optional = true`, pulled in by its feature:
 pulldown-cmark = { version = "0.11", optional = true }
 scraper        = { version = "0.20", optional = true }
 csv            = { version = "1.3",  optional = true }
-genpdf         = { version = "0.2",  optional = true }
+printpdf       = { version = "0.7",  optional = true }
 docx-rs        = { version = "0.4",  optional = true }
 
 [features]
@@ -497,7 +497,7 @@ export-html = ["dep:pulldown-cmark", "dep:scraper"]
 export-md   = ["dep:pulldown-cmark"]
 export-csv  = ["dep:csv"]
 export-json = []                      # serde_json is already non-optional
-export-pdf  = ["dep:genpdf"]
+export-pdf  = ["dep:printpdf"]
 export-docx = ["dep:docx-rs"]
 export-all  = ["export-html", "export-md", "export-csv", "export-json", "export-pdf", "export-docx"]
 ```
@@ -518,9 +518,13 @@ Backend behaviour:
   (CSV in, CSV out round-trip via the `csv` crate). Not offered for prose.
 - `to_json`: wrap text + minimal metadata in a JSON object via `serde_json`
   pretty.
-- `to_pdf`: lay the extracted text out with `genpdf` (default font, flow
-  pagination). CSS-perfect PDF explicitly NOT required. Output must be a
-  non-empty PDF beginning with `%PDF-` magic bytes.
+- `to_pdf`: lay the extracted text out with `printpdf` using a standard-14
+  built-in font (Helvetica), so no on-disk font file is needed and the document
+  is built fully in memory (flow pagination). CSS-perfect PDF explicitly NOT
+  required. Output must be a non-empty PDF beginning with `%PDF-` magic bytes.
+  (`genpdf 0.2` was rejected: its API loads a TrueType font family from font
+  FILES at runtime, which a lean GUI-free in-memory backend cannot satisfy
+  without bundling font binaries.)
 - `to_docx`: build a `.docx` (zip of `word/document.xml` + parts) from the
   extracted text via `docx-rs`. Output must be a valid zip containing the
   expected parts.
@@ -547,9 +551,14 @@ DECISION procedure (locked):
    the workspace `Cargo.toml` (a comment on the `rust-version` line) and in
    `ROADMAP.md`. Do NOT add a per-package `rust-version` override on `walrus-fmt`
    -- that would break the `rust-version.workspace = true` inheritance.
-4. PDF fallback: if `genpdf 0.2` forces an MSRV above an acceptable bound (post
-   ~1.80) or fails to resolve, switch PDF to `printpdf = "0.7"` (text/flow
-   pagination is sufficient).
+4. PDF backend: `printpdf = "0.7"` is the CHOSEN crate (not `genpdf`). genpdf
+   0.2 was rejected at implementation time because its API loads a TrueType font
+   family from font FILES on disk at runtime (`genpdf::fonts::from_files`), which
+   a lean GUI-free in-memory backend cannot satisfy without bundling font
+   binaries (also at odds with the ASCII-only-source / lean-embeddable
+   invariants). printpdf 0.7 uses the standard-14 built-in PDF fonts (Helvetica)
+   with no external font file and renders to a `Vec<u8>` in memory; text/flow
+   pagination is sufficient.
 5. DOCX: DOCX has NO lightweight alternative. If `docx-rs 0.4` forces an MSRV
    above ~1.80, KEEP `docx-rs` and accept + DOCUMENT its MSRV. Do NOT attempt a
    hand-rolled OOXML writer: the only archive crate in the graph is `tar`, which
@@ -750,8 +759,9 @@ backed by pure-logic tests); record any MSRV bump and its forcing crate (egui
 7. Export: `pub mod export` UNGATED with an always-compiled metadata surface
    (`ExportFormat`, `ExportUnavailable`, `offered_formats`, `to_original`); heavy
    backends feature-gated: HTML (`pulldown-cmark 0.11` + `scraper 0.20`), Markdown
-   (`pulldown-cmark 0.11`), CSV (`csv 1.3`), JSON (`serde_json`), PDF (`genpdf 0.2`,
-   `printpdf 0.7` fallback), DOCX (`docx-rs 0.4`). Breaking stub change to
+   (`pulldown-cmark 0.11`), CSV (`csv 1.3`), JSON (`serde_json`), PDF
+   (`printpdf 0.7`; genpdf 0.2 rejected, needs on-disk font files), DOCX
+   (`docx-rs 0.4`). Breaking stub change to
    `-> crate::Result<Vec<u8>>` + `mime` param (no existing callers). MSRV knob is
    the WORKSPACE `rust-version` (1.75); raise it only if a crate forces it, record
    the forcing crate; no hand-rolled OOXML. The 7.3 gate applies to the default

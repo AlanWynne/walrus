@@ -6,4 +6,9 @@
 //! real `player` state machine and the `app` shell.
 
 pub mod app;
+pub mod chrome;
+pub mod export_ui;
 pub mod player;
+pub mod theme;
+pub mod transport;
+pub mod view;

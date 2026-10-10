@@ -1,0 +1,7 @@
+{
+  "task_id": "task-walker-csv-viewer",
+  "task_description": "Implement the deferred CSV-viewer task per design.md: restructure walrus-fmt export so the metadata surface is always compiled while heavy backends stay feature-gated, add real export backends (html/md/csv/json/pdf/docx) at the design 7.2 versions behind the export-* features, gate MSRV through the workspace rust-version, and turn walker into a content-aware viewer (per-type renderers, speed control, egui built-in theming, FFWB-style chrome minus the command line, per-version export UI). TDD throughout; keep walrus-fmt GUI-free and every .rs under 400 non-test lines.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
