@@ -23,14 +23,6 @@ mod record;
 mod version;
 mod write;
 
-#[cfg(any(
-    feature = "export-html",
-    feature = "export-md",
-    feature = "export-csv",
-    feature = "export-json",
-    feature = "export-pdf",
-    feature = "export-docx",
-))]
 pub mod export;
 
 pub use error::{Result, WalrusError};

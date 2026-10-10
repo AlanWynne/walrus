@@ -21,6 +21,20 @@ session can pick up without re-discovering it.
   A real harness test (`crates/walker/tests/harness.rs`) drives a transport
   button and asserts player state. This raised the workspace MSRV to 1.95
   (egui 0.36 forcing crate).
+- Export module restructured so the metadata surface is ALWAYS compiled while
+  heavy backends stay feature-gated. `pub mod export` is ungated; `ExportFormat`
+  (now with an `Original` variant), `ExportUnavailable`, `offered_formats`, and
+  `to_original` compile with NO export feature and link zero export crates
+  (dependency-boundary proof). `export.rs` split into `export/{mod,original,
+  html,markdown,csv,json,pdf,docx}.rs`. Real backends behind `export-*`:
+  HTML/Markdown (`pulldown-cmark 0.11` + `scraper 0.20`), CSV (`csv 1.3`),
+  JSON (`serde_json`), PDF (`printpdf 0.7`), DOCX (`docx-rs 0.4`). The text
+  backends return `crate::Result<Vec<u8>>`; `to_html`/`to_pdf`/`to_docx` take a
+  `mime: &str`; `to_csv` is net-new. PDF uses `printpdf` not `genpdf`: genpdf 0.2
+  loads a TrueType font family from font FILES on disk at runtime, which a
+  GUI-free in-memory backend cannot satisfy without bundling font binaries, so
+  printpdf's standard-14 built-in Helvetica was chosen (design 7.2/7.3). No new
+  MSRV bump beyond the existing 1.95 (egui 0.36); the export crates build on it.
 - Container WRITER (`write.rs`): serialise manifest + base + log into zstd(tar).
   Public API: `WalrusFile::new_wal`, `to_bytes`, `write`. Round-trip unit test
   confirms every version index reconstructs byte-identically after write+read.
@@ -36,8 +50,7 @@ session can pick up without re-discovering it.
 2. gzip outer codec (reader currently zstd-only; magic sniffing is in place).
 3. `.wal <-> .wbl` conversion (`walx convert`): invert splices, re-base.
 4. Timestamp version addressing (`--at T`), per FORMAT.md section 5.
-5. Export backends: html/md/json implemented as simple stubs; csv real impl;
-   pdf/docx need a chosen crate (feature-gated so they stay optional).
+5. (DONE -- see "Done" above) Export backends restructured and implemented.
 6. CSV column viewer in `walker` (`View::Csv`): parse + aligned sortable grid.
 7. (DONE -- see "Done" above) The walking-walrus `walrus.wal` demo fixture:
    `generate_walk.rs` produces it and `examples/walrus.wal` is committed.

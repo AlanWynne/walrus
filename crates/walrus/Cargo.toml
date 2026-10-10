@@ -19,6 +19,18 @@ thiserror = { workspace = true }
 tar = { workspace = true }
 zstd = { workspace = true }
 
+# Optional export backends: pulled in only by their export-* feature so a
+# playback-only embedder stays lean (dependency boundary, invariant 2).
+pulldown-cmark = { version = "0.11", optional = true }
+scraper = { version = "0.20", optional = true }
+csv = { version = "1.3", optional = true }
+# printpdf (not genpdf): genpdf 0.2 requires loading a TrueType font family from
+# font FILES on disk at runtime; printpdf 0.7 uses the standard-14 built-in PDF
+# fonts (Helvetica) with no external font file, so a GUI-free in-memory backend
+# can emit a %PDF- document without bundling font binaries.
+printpdf = { version = "0.7", optional = true }
+docx-rs = { version = "0.4", optional = true }
+
 [dev-dependencies]
 # For the example generators only; not part of the library's dependency graph.
 anyhow = { workspace = true }
@@ -26,10 +38,10 @@ anyhow = { workspace = true }
 [features]
 default = []
 # Export formats are opt-in so a playback-only embedder stays lean.
-export-html = []
-export-md = []
-export-csv = []
-export-json = []
-export-pdf = []
-export-docx = []
+export-html = ["dep:pulldown-cmark", "dep:scraper"]
+export-md = ["dep:pulldown-cmark"]
+export-csv = ["dep:csv"]
+export-json = [] # serde_json is already a non-optional dependency
+export-pdf = ["dep:printpdf"]
+export-docx = ["dep:docx-rs"]
 export-all = ["export-html", "export-md", "export-csv", "export-json", "export-pdf", "export-docx"]
