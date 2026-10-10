@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 
-use walrus_fmt::{ChangeRecord, DocumentInfo, WalrusFile};
+use walrus_fmt::{ChangeRecord, WalrusFile};
 
 /// The walrus art lines at zero indentation (the leftmost frame). Each frame
 /// prepends `col` spaces to every line to place him at that column.
@@ -60,11 +60,13 @@ fn main() -> anyhow::Result<()> {
 
     let mut doc = WalrusFile::new_wal(base, log)?;
     let m = doc.manifest_mut();
-    m.document = DocumentInfo {
-        encoding: "utf-8".to_string(),
-        mime: "text/plain".to_string(),
-        name: "walrus.txt".to_string(),
-    };
+    if let Some(file) = m.files.first_mut() {
+        // Per-file document metadata now lives on the tracked file (the old
+        // top-level Manifest::document was removed by the multi-file reshape).
+        file.name = "walrus.txt".to_string();
+        file.encoding = "utf-8".to_string();
+        file.mime = "text/plain".to_string();
+    }
     m.created = Some("2026-10-08T20:30:00Z".to_string());
     m.generator = Some(format!(
         "walrus-fmt {} example/generate_walk",
@@ -80,7 +82,7 @@ fn main() -> anyhow::Result<()> {
     // the art's own built-in leading spaces do not skew the check.
     let reopened = WalrusFile::open(&out)?;
     let base_frame = reopened.reconstruct(walrus_fmt::Version::Index(0))?;
-    let head_frame = reopened.reconstruct(walrus_fmt::Version::Head)?;
+    let head_frame = reopened.reconstruct_head()?;
     let shift = leading_spaces(&head_frame) - leading_spaces(&base_frame);
     println!("wrote {} ({} versions)", out.display(), reopened.len());
     println!("  verify: walrus shifted {shift} columns base->head (expected {STEPS})");

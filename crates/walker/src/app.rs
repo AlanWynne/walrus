@@ -66,8 +66,8 @@ impl WalkerApp {
     fn open_file(&mut self, path: std::path::PathBuf) {
         match WalrusFile::open(&path) {
             Ok(file) => {
-                let doc = file.manifest().document.clone();
-                self.renderer = view::select_renderer(&doc.mime, &doc.name);
+                let (name, mime) = document_name_and_mime(file.manifest());
+                self.renderer = view::select_renderer(&mime, &name);
                 let mut player = Player::new(file);
                 player.seek(0);
                 transport::set_speed_multiplier(&mut player, self.speed);
@@ -113,9 +113,20 @@ impl WalkerApp {
     /// Build the export context for the chrome menu, if a file is loaded.
     fn export_context(&self) -> Option<(Vec<walrus_fmt::export::ExportFormat>, String, String)> {
         let player = self.player.as_ref()?;
-        let doc = &player.manifest().document;
-        let offered = walrus_fmt::export::offered_formats(&doc.mime);
-        Some((offered, doc.mime.clone(), doc.name.clone()))
+        let (name, mime) = document_name_and_mime(player.manifest());
+        let offered = walrus_fmt::export::offered_formats(&mime);
+        Some((offered, mime, name))
+    }
+}
+
+/// The document name and MIME for display and renderer selection.
+///
+/// Document metadata is per-file now; the single-document model keeps it on the
+/// first tracked file. Falls back to sensible defaults for an empty manifest.
+fn document_name_and_mime(manifest: &walrus_fmt::Manifest) -> (String, String) {
+    match manifest.files.first() {
+        Some(file) => (file.name.clone(), file.mime.clone()),
+        None => (String::new(), "application/octet-stream".to_string()),
     }
 }
 
@@ -178,16 +189,18 @@ impl eframe::App for WalkerApp {
         let renderer_label = renderer_label(&self.renderer);
         let status = self.status.clone();
         egui::Panel::bottom("status").show(ui, |ui| {
-            let info = self.player.as_ref().map(|player| {
-                let doc = &player.manifest().document;
-                StatusInfo {
-                    file_name: &doc.name,
+            let info = self.player.as_ref().and_then(|player| {
+                // Document metadata is per-file; the single-document model keeps
+                // it on the first tracked file.
+                let file = player.manifest().files.first()?;
+                Some(StatusInfo {
+                    file_name: &file.name,
                     variant,
                     index: player.index(),
                     total: player.len(),
                     renderer: renderer_label,
-                    mime: &doc.mime,
-                }
+                    mime: &file.mime,
+                })
             });
             chrome::status_bar(ui, info.as_ref(), &status);
         });

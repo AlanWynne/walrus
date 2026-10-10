@@ -24,8 +24,12 @@ Hard invariants (project-conventions), enforced by review:
 - INV-2 `walrus-fmt` stays GUI-free and app-free: no egui/eframe/ff-*; export
   backends behind optional features only. The diff engine must be pure-Rust with
   no app/GUI dependency.
-- INV-3 `.wal` and `.wbl` are symmetric and inter-convertible; reconstruction is
-  byte-identical for the same index across variants.
+- INV-3 Forward and reverse files are symmetric and inter-convertible;
+  reconstruction is byte-identical for the same index of a given file regardless
+  of its direction. This is a PER-FILE property: direction is taken from the
+  file's own `.wchg` header (authoritative), the archive `variant`/extension is
+  never consulted for reconstruction, and an archive MAY hold a mix of forward
+  and reverse files.
 - INV-4 Splices are the single change primitive (`{at, delete_len, insert}`).
 - INV-5 Container reader sniffs codec from magic bytes, not extension.
 - Source rules: every `.rs` under 400 non-test lines; strict ASCII; no
@@ -58,12 +62,25 @@ impl Archive {
     pub fn reconstruct(&self, file: &FileId, v: Version) -> Result<Vec<u8>>;
     pub fn log_bytes(&self, file: &FileId) -> u64;  // for bloat ratio
     // mutate (transactional at the archive level)
-    pub fn add(&mut self, name, bytes, generations: Option<u32>) -> Result<()>;
+    // `dir` overrides the default direction ONLY when CREATING the file;
+    // it is IGNORED for an already-tracked file (direction is immutable
+    // once tracked -- only `convert` may flip an existing file).
+    pub fn add(&mut self, name, bytes, generations: Option<u32>,
+               dir: Option<Direction>) -> Result<()>;
+    // `update` diffs old-vs-new to PRODUCE forward splices, then funnels
+    // through the same storage/transaction path as `update_with_splices`.
     pub fn update(&mut self, name, bytes, generations: Option<u32>) -> Result<()>;
+    // Editor-facing: caller supplies forward-sense splices directly (its
+    // coalesced piece list for one save). The library applies the file's
+    // stored direction (forward: store as-is; reverse: invert + advance base).
+    pub fn update_with_splices(&mut self, name, splices: &[Splice]) -> Result<()>;
     pub fn remove(&mut self, mask, force: bool) -> Result<()>;
     pub fn condense(&mut self, mask, keep: usize) -> Result<()>;
     pub fn set_generations(&mut self, file, n: u32) -> Result<()>;
-    pub fn convert(&self) -> Result<Archive>;       // .wal <-> .wbl
+    // per-file direction flip is the primitive; whole-archive is the
+    // no-mask degenerate case. Optional file mask + target direction.
+    pub fn convert(&self, mask: Option<&str>, to: Option<Direction>)
+        -> Result<Archive>;
     pub fn write(&self, path) -> Result<()>;         // transactional
 }
 
@@ -98,8 +115,9 @@ direction, generations, name, encoding, count, granularity_hint}` and
 - AC2 `base_index`/`head_index` match the spec per variant: `.wal` ->
   base_index=count, head_index=0; `.wbl` -> base_index=0, head_index=count.
 - AC3 `validate()` iterates files and rejects a file whose checkpoint index >
-  count, and rejects a `.wchg` header whose `direction` disagrees with the
-  archive variant.
+  count. It does NOT reject a `.wchg` header whose `direction` disagrees with the
+  archive `variant`: direction is per-file and authoritative, so a mixed-direction
+  archive is legal (a file forward or reverse under either variant passes).
 - AC4 A missing/non-`wchg` header is a typed error (not a mis-parsed record).
 
 ### FR-W2 Container reader for the per-file layout
@@ -114,11 +132,13 @@ records). Codec sniffing (zstd/gzip magic) is UNCHANGED (INV-5).
   deferral (reader errors clearly, not a panic).
 
 ### FR-W3 Index flip in reconstruct + version addressing (INV-3, highest risk)
-`reconstruct` and `version::resolve` become variant/direction aware. Index 0 =
-current for both; `.wal` reaching index k applies `count-k` forward records;
-`.wbl` reaching index k applies the first k reverse records. Add
-`Version::Timestamp`.
-- AC1 `reconstruct(file, Index(0))` == current for a `.wal` AND a `.wbl` fixture.
+`reconstruct` and `version::resolve` become direction aware. Reconstruction
+direction is taken PER FILE from that file's `.wchg` header, NOT from the archive
+`variant` or extension. Index 0 = current for both directions; a forward file
+reaching index k applies `count-k` forward records; a reverse file reaching
+index k applies the first k reverse records. Add `Version::Timestamp`.
+- AC1 `reconstruct(file, Index(0))` == current for a forward AND a reverse file
+  fixture, including a MIXED archive holding one of each.
 - AC2 Byte-identical output for the same index across a `.wal` and its converted
   `.wbl` (strict assertion of INV-3).
 - AC3 `Current`/`Original`/`Relative`/`Label`/`Timestamp` resolve per-file and
@@ -154,16 +174,35 @@ header. Binary input REJECTED on add/update with a clear error.
 - AC4 `cargo tree -p walrus-fmt --features <diff>` adds no app/GUI crate (INV-2).
 
 ### FR-W7 Mutate API + convert
-`add` (create-or-new-version), `update` (RC-8 if absent), `remove(mask, force)`,
-`set_generations`, `convert()` (invert splices + re-base to the other variant).
-All transactional (FR-W4).
-- AC1 add creates a missing file (first version = base = current); a second add
-  diffs against current and appends a record.
-- AC2 update on a missing file fails with the typed "must add" error.
+`add` (create-or-new-version), `update` (RC-8 if absent), `update_with_splices`
+(editor-supplied forward splices), `remove(mask, force)`, `set_generations`,
+`convert()` (per-file invert splices + re-base; see FR-W11). All transactional
+(FR-W4).
+
+Lifecycle (add-first then update-after): `add` establishes the base; `update`
+and `update_with_splices` append a change record and fail with the typed "must
+add first" error (RC-8) on an untracked file. Add-on-first-save: an editor adds
+a file on its FIRST SAVE with the real content (not on file-create). Index 0 is
+ALWAYS the current version; a freshly-added file has count=0 and only index 0
+exists. An empty first version exists ONLY if the caller deliberately adds empty
+content, and that empty state lands at the FAR (highest) index, never at index 0.
+One record per SAVE: a writer coalesces the editor's piece list since the last
+save into the single NET splice, so the version index counts saves, not
+keystrokes.
+- AC1 add creates a missing file (first version = base = current, count=0); a
+  second add diffs against current and appends a record.
+- AC2 update (and `update_with_splices`) on a missing file fails with the typed
+  "must add" error (RC-8).
 - AC3 remove of a multi-match mask without `force` refuses and lists matches;
   with `force` removes all.
-- AC4 convert round-trip: `.wal` -> `.wbl` -> `.wal` reconstructs every index
+- AC4 convert round-trip: forward -> reverse -> forward reconstructs every index
   identically to the original (INV-3).
+- AC5 `update_with_splices` with caller-supplied FORWARD splices reconstructs
+  byte-identically and respects the file's STORED direction: a forward file
+  stores the splice as-is (base unchanged); a reverse file INVERTS the incoming
+  splice and ADVANCES the base to the new current bytes. `update(bytes)` is the
+  convenience path that diffs old-vs-new to produce the same forward splices and
+  funnels through the same storage/transaction path.
 
 ### FR-W8 Internationalization / encoding
 UTF-8 internal storage. On add, detect or accept a declared source encoding,
@@ -199,8 +238,20 @@ table (0 ok, 2 usage, 4 index-beyond-last, 8 target-missing).
   log bytes.
 - AC2 Mutually exclusive operations: supplying two ops is RC 2.
 - AC3 `update`/`remove`/`condense` on a non-existent target -> RC 8.
-- AC4 `convert` changes the archive variant and round-trips (FR-W7 AC4).
-- AC5 Subcommand behaviour verified over fixtures (not just unit tests).
+- AC4 `convert` flips per-file direction (optional file-mask; whole-archive is
+  the no-mask degenerate case) with a `--to wal|wbl` target, round-trips
+  (FR-W7 AC4), MAY update the manifest `variant` to the new predominant
+  direction and MAY SUGGEST an extension rename, but MUST NOT auto-rename the
+  file on disk (an explicit `-o <name>` or a user rename changes the extension).
+- AC5 `add` accepts `--wal`/`--wbl` (equivalently `--direction forward|reverse`)
+  that overrides the default direction ONLY when creating a new file; for an
+  already-tracked file the flag is IGNORED and the existing direction kept
+  (per-file direction is immutable once tracked). When CREATING a brand-new
+  archive with no manifest, the seed order is: explicit flag, else extension
+  (.wal->wal, .wbl->wbl), else default wal/forward for a bare name. For an
+  EXISTING archive the manifest `variant` drives the default (extension not
+  consulted), keeping behaviour identical on extension-blind Unix systems.
+- AC6 Subcommand behaviour verified over fixtures (not just unit tests).
 
 ### FR-W12 Regenerate examples + fixtures
 Update `generate_walk.rs` / `generate_story.rs` to the multi-file manifest +

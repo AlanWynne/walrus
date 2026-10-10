@@ -1,10 +1,14 @@
 //! Reconstruct a document version by replaying splice records over the base.
 
 use crate::record::{ChangeRecord, Op};
+use crate::wchg::Direction;
 use crate::{Result, WalrusError};
 
 /// Rebuild the document at `target_index` by applying the first `target_index`
-/// splice records to `base`, in order.
+/// splice records to `base`, in order (the OLD single-document, forward-only
+/// convention where index 0 is the stored base and `len` is the far end). The
+/// compatibility [`crate::WalrusFile`] path keeps this convention; the new
+/// per-file, direction-aware engine is [`reconstruct_directional`].
 ///
 /// Checkpoint records are skipped (they carry integrity hashes, not mutations).
 /// The caller has already validated that `target_index <= number of records`.
@@ -13,11 +17,45 @@ pub(crate) fn reconstruct(
     log: &[ChangeRecord],
     target_index: usize,
 ) -> Result<Vec<u8>> {
+    // The old forward-only "apply first `target_index`" shares the apply loop
+    // with the directional engine; only the index convention differs.
+    apply_first_splices(base, log, target_index)
+}
+
+/// Reconstruct a version directionally: apply the first `splices_to_apply`
+/// SPLICE records of `log` to `base`, in order, where the count depends on the
+/// file's own `direction` and the resolved canonical `index` (0 = current,
+/// `count` = original).
+///
+/// - FORWARD file: the base is the ORIGINAL (index `count`); to reach index
+///   `index`, apply the first `count - index` splices.
+/// - REVERSE file: the base is the CURRENT (index 0), records already inverted;
+///   to reach index `index`, apply the first `index` splices.
+///
+/// Checkpoint records are skipped and do NOT advance the applied counter. The
+/// caller has already validated `index` into `0..=count` via the resolver.
+pub(crate) fn reconstruct_directional(
+    base: &[u8],
+    log: &[ChangeRecord],
+    direction: Direction,
+    index: usize,
+    count: usize,
+) -> Result<Vec<u8>> {
+    let splices_to_apply = match direction {
+        Direction::Forward => count.saturating_sub(index),
+        Direction::Reverse => index,
+    };
+    apply_first_splices(base, log, splices_to_apply)
+}
+
+/// Apply the first `n` SPLICE records of `log` to `base` in order, skipping
+/// checkpoint records (which do not advance the applied counter).
+fn apply_first_splices(base: &[u8], log: &[ChangeRecord], n: usize) -> Result<Vec<u8>> {
     let mut doc = base.to_vec();
     let mut applied = 0usize;
 
     for record in log {
-        if applied == target_index {
+        if applied == n {
             break;
         }
         match &record.op {
@@ -82,5 +120,50 @@ mod tests {
         let base = b"hi".to_vec();
         let log = vec![ChangeRecord::splice(5, 0, "x")];
         assert!(reconstruct(&base, &log, 1).is_err());
+    }
+
+    // === reconstruct_directional (per-file, direction-aware) ============
+
+    #[test]
+    fn directional_forward_index_zero_is_current_and_count_is_original() {
+        // Forward file: base is the ORIGINAL "cat"; forward log appends to reach
+        // the current "the cats". count = 2.
+        let original = b"cat".to_vec();
+        let log = vec![
+            ChangeRecord::splice(3, 0, "s"),    // "cat" -> "cats"
+            ChangeRecord::splice(0, 0, "the "), // "cats" -> "the cats"
+        ];
+        // index 0 (current) applies all count=2 splices.
+        assert_eq!(
+            reconstruct_directional(&original, &log, Direction::Forward, 0, 2).unwrap(),
+            b"the cats"
+        );
+        // index count=2 (original) applies 0 splices = the base.
+        assert_eq!(
+            reconstruct_directional(&original, &log, Direction::Forward, 2, 2).unwrap(),
+            b"cat"
+        );
+    }
+
+    #[test]
+    fn directional_reverse_index_zero_is_base_and_count_applies_all() {
+        // Reverse file: base is the CURRENT "the cats"; reverse log walks back to
+        // the original "cat". These reverse records are the inverse of the
+        // forward ones, applied current -> original. count = 2.
+        let current = b"the cats".to_vec();
+        let log = vec![
+            ChangeRecord::splice(0, 4, ""), // "the cats" -> "cats"
+            ChangeRecord::splice(3, 1, ""), // "cats" -> "cat"
+        ];
+        // index 0 (current) applies 0 reverse splices = the base.
+        assert_eq!(
+            reconstruct_directional(&current, &log, Direction::Reverse, 0, 2).unwrap(),
+            b"the cats"
+        );
+        // index count=2 (original) applies all reverse splices.
+        assert_eq!(
+            reconstruct_directional(&current, &log, Direction::Reverse, 2, 2).unwrap(),
+            b"cat"
+        );
     }
 }

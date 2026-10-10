@@ -52,18 +52,23 @@ fn cmd_info(path: Option<&String>) -> anyhow::Result<()> {
     println!("file:      {path}");
     println!("variant:   {:?}", m.variant);
     println!("spec:      {}", m.spec_version);
-    println!(
-        "document:  {} ({}, {})",
-        m.document.name, m.document.mime, m.document.encoding
-    );
+    // Document metadata is per-file now; the single-document model stores it on
+    // the first (and only) tracked file.
+    if let Some(file) = m.files.first() {
+        println!(
+            "document:  {} ({}, {})",
+            file.name, file.mime, file.encoding
+        );
+    }
     println!(
         "versions:  0..={} ({} change records)",
         doc.len(),
         doc.len()
     );
-    if !m.checkpoints.is_empty() {
+    let checkpoints = m.checkpoints();
+    if !checkpoints.is_empty() {
         println!("checkpoints:");
-        for cp in &m.checkpoints {
+        for cp in checkpoints {
             println!("  [{:>5}] {}", cp.index, cp.label);
         }
     }

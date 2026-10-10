@@ -34,6 +34,10 @@ docx-rs = { version = "0.4", optional = true }
 [dev-dependencies]
 # For the example generators only; not part of the library's dependency graph.
 anyhow = { workspace = true }
+# Test-only: TempDir for round-trip and transactional-write tests (FR-W4).
+# Already resolved at 3.27 via the workspace lockfile; a dev-dependency so it
+# never enters the library's own dependency graph (invariant 2).
+tempfile = "3"
 
 [features]
 default = []
