@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 mod archive;
+mod atomic;
 mod container;
 mod error;
 mod manifest;

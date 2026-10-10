@@ -15,7 +15,7 @@ use crate::manifest::{Manifest, TrackedFile};
 use crate::record::ChangeRecord;
 use crate::version::Version;
 use crate::wchg::WchgHeader;
-use crate::{container, reconstruct, version, Result, WalrusError};
+use crate::{atomic, container, reconstruct, version, write, Result, WalrusError};
 
 // === FileId =============================================================
 
@@ -196,6 +196,65 @@ impl Archive {
         )
     }
 
+    /// Serialise this archive to its compressed `zstd(tar{...})` container
+    /// bytes: `manifest.json` plus, per tracked file, `files/<id>/base` and
+    /// `files/<id>/<name>.wchg` (header line first), in manifest order.
+    ///
+    /// This is the in-memory counterpart of [`Archive::write`]; it does no I/O.
+    ///
+    /// # Errors
+    /// Returns [`WalrusError::Json`] on a serialisation fault and
+    /// [`WalrusError::Io`] on a tar/zstd framing failure.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        // The `.wchg` member name is a filesystem-safe rendering of the tracked
+        // file's authoritative manifest name (FORMAT.md section 2.1). The
+        // manifest entry is the source of that name; fall back to the id so a
+        // file missing from the manifest still gets a valid, unique member path.
+        let wchg_names: Vec<String> = self
+            .files
+            .iter()
+            .map(|f| {
+                let name = self
+                    .manifest
+                    .files
+                    .iter()
+                    .find(|t| t.id == f.id)
+                    .map(|t| t.name.as_str())
+                    .unwrap_or(f.id.as_str());
+                wchg_member_name(name)
+            })
+            .collect();
+        let parts: Vec<write::FileParts<'_>> = self
+            .files
+            .iter()
+            .zip(wchg_names.iter())
+            .map(|(f, wchg_name)| write::FileParts {
+                id: &f.id,
+                wchg_name: wchg_name.as_str(),
+                base: &f.base,
+                header: &f.header,
+                records: &f.records,
+            })
+            .collect();
+        write::write_archive(&self.manifest, &parts)
+    }
+
+    /// Write this archive to `path` TRANSACTIONALLY: serialise to the full
+    /// container bytes, then replace `path` via a temp-file-then-atomic-rename
+    /// (FORMAT.md section 6). A failed or interrupted write leaves any
+    /// pre-existing archive at `path` byte-for-byte unchanged -- the rename is
+    /// the only mutation of `path` and runs last, only after the complete bytes
+    /// are staged in a sibling temp file.
+    ///
+    /// # Errors
+    /// Returns [`WalrusError::Json`]/[`WalrusError::Io`] from serialisation (see
+    /// [`Archive::to_bytes`]), or [`WalrusError::Io`] if the temp file cannot be
+    /// written or the final rename fails. On any error `path` is unchanged.
+    pub fn write(&self, path: impl AsRef<Path>) -> Result<()> {
+        let bytes = self.to_bytes()?;
+        atomic::atomic_write(path, &bytes)
+    }
+
     /// Resolve a selector (id or name) to the parsed per-file contents.
     fn lookup(&self, sel: &str) -> Option<&ArchiveFile> {
         let tracked = self.file(sel)?;
@@ -267,6 +326,21 @@ fn read_tracked_file(
         header,
         records,
     })
+}
+
+/// A filesystem-safe `<name>` for the `files/<id>/<name>.wchg` member, derived
+/// from the tracked file's authoritative manifest name (FORMAT.md section 2.1:
+/// the member name is a readable rendering for human convenience, present only
+/// so a standalone-extracted log is recognisable). Path separators and
+/// backslashes become `_` so the log stays a single flat member inside the
+/// file's directory; the authoritative name is the manifest's, not this slug.
+fn wchg_member_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' => '_',
+            other => other,
+        })
+        .collect()
 }
 
 /// Match the single `*.wchg` member inside a file's `files/<id>/` directory.
@@ -736,5 +810,198 @@ mod reconstruct_tests {
             .reconstruct(&FileId::from("absent"), Version::Current)
             .expect_err("absent file id must error");
         assert!(matches!(err, WalrusError::UnknownFile { .. }));
+    }
+}
+
+// === FR-W4 writer round-trip tests (AC1) ===============================
+//
+// AC1: write-then-read reconstructs every index of every file byte-identically.
+// These exercise the PUBLIC `Archive::write` + `Archive::open` surface, but the
+// multi-file fixture is assembled through the `#[cfg(test)] pub(crate)`
+// `from_parts_for_test` seam -- the same choice the FR-W3 reconstruct tests
+// document: an external integration-test crate could only reach a fully `pub`
+// constructor, which would widen the production API purely for tests (forbidden
+// by the task). So the round-trip tests live in-crate here. `tempfile::TempDir`
+// gives each test a private directory that is removed on drop.
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use crate::manifest::{TrackedFile, Variant};
+    use crate::record::ChangeRecord;
+    use crate::wchg::{Direction, WchgHeader};
+
+    /// One tracked file's test inputs: `(id, name, direction, base, records)`.
+    type FileSpec = (
+        &'static str,
+        &'static str,
+        Direction,
+        Vec<u8>,
+        Vec<ChangeRecord>,
+    );
+
+    /// Build an in-memory [`Archive`] from a list of per-file parts, deriving
+    /// each manifest entry (count = splice count) and `.wchg` header from the
+    /// direction/name/records so the public write path has everything it needs.
+    fn archive_from(variant: Variant, files: &[FileSpec]) -> Archive {
+        let mut manifest = Manifest::new(variant);
+        let mut parts = Vec::new();
+        for (id, name, direction, base, records) in files {
+            let count = records.iter().filter(|r| r.is_splice()).count();
+            manifest.files.push(TrackedFile::new_with_direction(
+                *id, *name, *direction, count,
+            ));
+            let header = WchgHeader::new(*direction, 0, *name, "utf-8", count);
+            parts.push((id.to_string(), base.clone(), header, records.clone()));
+        }
+        Archive::from_parts_for_test(manifest, parts)
+    }
+
+    /// Assert that two archives reconstruct byte-identically for every index of
+    /// every tracked file in `0..=count`.
+    fn assert_every_index_identical(original: &Archive, reopened: &Archive) {
+        let ids: Vec<String> = original.files().map(|t| t.id.clone()).collect();
+        for id in &ids {
+            let count = original
+                .file(id)
+                .expect("file present in original")
+                .versions
+                .count;
+            for k in 0..=count {
+                let want = original
+                    .reconstruct(&FileId::from(id.as_str()), Version::Index(k))
+                    .expect("original reconstruct");
+                let got = reopened
+                    .reconstruct(&FileId::from(id.as_str()), Version::Index(k))
+                    .expect("reopened reconstruct");
+                assert_eq!(
+                    want, got,
+                    "file '{id}' index {k} differs after a write/read round-trip"
+                );
+            }
+        }
+    }
+
+    fn forward_parts() -> FileSpec {
+        (
+            "fwd",
+            "forward.txt",
+            Direction::Forward,
+            b"cat".to_vec(),
+            vec![
+                ChangeRecord::splice(3, 0, "s"),    // "cat" -> "cats"
+                ChangeRecord::splice(0, 0, "the "), // "cats" -> "the cats"
+            ],
+        )
+    }
+
+    fn reverse_parts() -> FileSpec {
+        (
+            "rev",
+            "reverse.txt",
+            Direction::Reverse,
+            b"the cats".to_vec(),
+            vec![
+                ChangeRecord::splice(0, 4, ""), // "the cats" -> "cats"
+                ChangeRecord::splice(3, 1, ""), // "cats" -> "cat"
+            ],
+        )
+    }
+
+    #[test]
+    fn write_then_read_round_trips_every_index_of_a_forward_file() {
+        let original = archive_from(Variant::Wal, &[forward_parts()]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fwd.wal");
+        original.write(&path).expect("write");
+        let reopened = Archive::open(&path).expect("reopen");
+        assert_every_index_identical(&original, &reopened);
+    }
+
+    #[test]
+    fn write_then_read_round_trips_every_index_of_a_reverse_file() {
+        let original = archive_from(Variant::Wbl, &[reverse_parts()]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rev.wbl");
+        original.write(&path).expect("write");
+        let reopened = Archive::open(&path).expect("reopen");
+        assert_every_index_identical(&original, &reopened);
+    }
+
+    #[test]
+    fn write_then_read_round_trips_a_mixed_direction_archive() {
+        // One archive holds both a forward and a reverse file; each must round
+        // trip from its OWN header direction (the variant is never consulted).
+        let original = archive_from(Variant::Wal, &[forward_parts(), reverse_parts()]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mixed.wal");
+        original.write(&path).expect("write");
+        let reopened = Archive::open(&path).expect("reopen");
+        assert_eq!(reopened.files().count(), 2);
+        assert_every_index_identical(&original, &reopened);
+    }
+
+    #[test]
+    fn write_then_read_round_trips_an_empty_archive() {
+        let original = archive_from(Variant::Wal, &[]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty.wal");
+        original.write(&path).expect("write");
+        let reopened = Archive::open(&path).expect("reopen");
+        assert_eq!(reopened.files().count(), 0);
+        assert_eq!(reopened.manifest().variant, Variant::Wal);
+    }
+
+    #[test]
+    fn written_container_is_zstd_magic_and_the_reader_sniffs_it() {
+        // INV-5 at the writer boundary: the emitted codec is what the reader
+        // sniffs. The first bytes are the zstd magic, and `Archive::read`
+        // accepts the in-memory bytes directly.
+        let original = archive_from(Variant::Wal, &[forward_parts()]);
+        let bytes = original.to_bytes().expect("to_bytes");
+        assert_eq!(&bytes[0..4], &[0x28, 0xB5, 0x2F, 0xFD], "zstd magic");
+        Archive::read(&bytes).expect("the writer's own output reads back");
+    }
+
+    #[test]
+    fn wchg_record_content_with_trailing_spaces_survives_round_trip() {
+        // FORMAT.md 4.1: trailing spaces inside an insert are DATA and must not
+        // be trimmed by the writer or the reader.
+        let records = vec![ChangeRecord::splice(0, 0, "hard break   ")];
+        let original = archive_from(
+            Variant::Wal,
+            &[(
+                "f0",
+                "doc.txt",
+                Direction::Forward,
+                b"base".to_vec(),
+                records,
+            )],
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("spaces.wal");
+        original.write(&path).expect("write");
+        let reopened = Archive::open(&path).expect("reopen");
+        // Index 0 is current: the base with the splice applied.
+        assert_eq!(
+            reopened
+                .reconstruct(&FileId::from("f0"), Version::Index(0))
+                .expect("reconstruct current"),
+            b"hard break   base"
+        );
+    }
+
+    #[test]
+    fn write_is_transactional_a_second_write_replaces_cleanly() {
+        // A successful second write over an existing archive leaves a valid,
+        // fully-replaced archive (not a mix of old and new bytes).
+        let first = archive_from(Variant::Wal, &[forward_parts()]);
+        let second = archive_from(Variant::Wbl, &[reverse_parts()]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("replace.wal");
+        first.write(&path).expect("first write");
+        second.write(&path).expect("second write");
+        let reopened = Archive::open(&path).expect("reopen");
+        assert_eq!(reopened.manifest().variant, Variant::Wbl);
+        assert_every_index_identical(&second, &reopened);
     }
 }
