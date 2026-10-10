@@ -54,9 +54,8 @@ pub(crate) fn reconstruct_directional(
 /// # Errors
 /// Returns [`WalrusError::SpliceOutOfBounds`] if the record's range falls
 /// outside `doc`.
-// Consumed by the FEAT-002 re-base fold (`crate::rebase::fold_oldest`), whose
-// only non-test caller (the FEAT-003 Archive mutate path) is not yet present.
-#[allow(dead_code)]
+// Consumed by the re-base fold (`crate::rebase::fold_oldest`), reached from the
+// live Archive mutate path (`condense` / `enforce_generations`) in `mutate.rs`.
 pub(crate) fn apply_record(doc: &mut Vec<u8>, record: &ChangeRecord) -> Result<()> {
     match &record.op {
         Op::Splice {

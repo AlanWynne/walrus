@@ -47,12 +47,14 @@ impl From<String> for FileId {
 // === Archive ============================================================
 
 /// One tracked file's parsed container contents, matched to its manifest entry
-/// by `id`. Private: callers reach a file's data through [`Archive`] accessors.
-struct ArchiveFile {
-    id: String,
-    base: Vec<u8>,
-    header: WchgHeader,
-    records: Vec<ChangeRecord>,
+/// by `id`. Crate-visible so the sibling `mutate` module can re-base a file's
+/// base/records in place; external callers reach a file's data through
+/// [`Archive`] accessors only.
+pub(crate) struct ArchiveFile {
+    pub(crate) id: String,
+    pub(crate) base: Vec<u8>,
+    pub(crate) header: WchgHeader,
+    pub(crate) records: Vec<ChangeRecord>,
 }
 
 /// A read-only, in-memory Walrus archive: the manifest plus every tracked
@@ -259,6 +261,20 @@ impl Archive {
     fn lookup(&self, sel: &str) -> Option<&ArchiveFile> {
         let tracked = self.file(sel)?;
         self.files.iter().find(|f| f.id == tracked.id)
+    }
+
+    /// Mutable access to the manifest, for the sibling `mutate` module. Not
+    /// part of the public API: re-base/condense update the per-file manifest
+    /// entry (versions, checkpoints, rebase audit) through this seam.
+    pub(crate) fn manifest_mut(&mut self) -> &mut Manifest {
+        &mut self.manifest
+    }
+
+    /// Mutable access to the parsed per-file contents, for the sibling `mutate`
+    /// module. Not part of the public API: re-base folds a file's base/records
+    /// and header `count` in place through this seam.
+    pub(crate) fn files_mut(&mut self) -> &mut [ArchiveFile] {
+        &mut self.files
     }
 
     /// Build an [`Archive`] directly from a manifest and per-file parts, for

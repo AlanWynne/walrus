@@ -11,11 +11,11 @@
 //! tests stay deterministic. Reconstruction and splice application are REUSED
 //! from [`crate::reconstruct`] (INV-4) rather than re-implemented.
 //
-// This module is the PURE core (FEAT-002). Its `pub(crate)` entry points are
-// consumed by the Archive-level `condense` / `generations` wiring that lands in
-// FEAT-003 (`mutate.rs`); until then the only non-test caller is absent, so the
-// surface is allowed to read as dead code without failing `-D warnings`.
-#![allow(dead_code)]
+// This module is the PURE core. Its `pub(crate)` entry points `fold_oldest`,
+// `trim_to`, `prune_checkpoints`, and `updated_rebase_info` are consumed by the
+// Archive-level `condense` / `enforce_generations` wiring in `mutate.rs`
+// (FEAT-003); the module no longer needs a blanket dead-code allow. The one
+// exception is `trim_to_versions` (see its scoped allow below).
 
 use crate::record::ChangeRecord;
 use crate::wchg::Direction;
@@ -132,6 +132,12 @@ pub(crate) fn trim_to(
 /// # Errors
 /// Returns [`crate::WalrusError::Rebase`] when `versions == 0`, and propagates
 /// [`crate::WalrusError::SpliceOutOfBounds`] from the fold.
+// The Archive layer maps `generations = N` onto `trim_to(keep = N - 1)` directly
+// (it returns early for the unlimited `N = 0` case, so the impossible
+// zero-versions request this wrapper guards cannot reach it). This typed entry
+// is retained and unit-tested as the version-count-facing form; its only caller
+// today is the pure-core test, hence the scoped allow.
+#[allow(dead_code)]
 pub(crate) fn trim_to_versions(
     base: &[u8],
     records: &[ChangeRecord],
