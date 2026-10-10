@@ -20,6 +20,7 @@ mod atomic;
 mod container;
 mod error;
 mod manifest;
+mod rebase;
 mod reconstruct;
 mod record;
 mod timestamp;

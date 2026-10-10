@@ -94,6 +94,16 @@ pub enum WalrusError {
         len: usize,
     },
 
+    /// A re-base / trim request could not be satisfied: either an impossible
+    /// request (e.g. retaining zero versions, when the current version always
+    /// exists) or, at the archive level, a `condense` mask matching no tracked
+    /// file. The benign `keep >= count` case is a no-op success, not this error.
+    #[error("re-base failed: {reason}")]
+    Rebase {
+        /// Human-readable reason the re-base could not proceed.
+        reason: String,
+    },
+
     /// JSON (de)serialisation failure.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
