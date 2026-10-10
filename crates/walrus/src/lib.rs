@@ -18,6 +18,8 @@
 mod archive;
 mod atomic;
 mod container;
+#[cfg(feature = "diff")]
+mod diff;
 mod error;
 mod manifest;
 mod mutate;
@@ -32,6 +34,8 @@ mod write;
 pub mod export;
 
 pub use archive::{Archive, FileId};
+#[cfg(feature = "diff")]
+pub use diff::{diff, DiffResult, Granularity};
 pub use error::{Result, WalrusError};
 pub use manifest::{
     Checkpoint, FileAttributes, Manifest, RebaseInfo, TrackedFile, Variant, Versions,

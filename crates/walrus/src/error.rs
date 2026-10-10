@@ -108,6 +108,14 @@ pub enum WalrusError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The diff engine was given binary input (FR-W6). The adapter takes UTF-8
+    /// `&str`, so this triggers when otherwise-valid UTF-8 contains a NUL byte.
+    #[error("binary input rejected: {reason}")]
+    BinaryInput {
+        /// Human-readable reason the input was treated as binary.
+        reason: String,
+    },
+
     /// An export backend failed to produce output.
     #[error("export failed ({backend}): {reason}")]
     Export {

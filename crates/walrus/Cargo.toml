@@ -31,6 +31,16 @@ csv = { version = "1.3", optional = true }
 printpdf = { version = "0.7", optional = true }
 docx-rs = { version = "0.4", optional = true }
 
+# Optional diff engine (FR-W6): turns an old-vs-new text pair into byte-offset
+# splices. Behind the `diff` feature so a playback-only embedder stays lean
+# (dependency boundary, invariant 2). Minimal feature set: `text` is the diff
+# core (zero transitive deps); `unicode` is REQUIRED for grapheme-cluster
+# tokenising so char-level splits land on grapheme boundaries (AC2). We do NOT
+# enable `bytes`, `inline`, `serde`, or `wasm32_web_time` -- none are needed and
+# `bytes` would widen the surface for no gain. `default-features = false` keeps
+# us from silently depending on anything beyond what is listed.
+similar = { version = "2.7", optional = true, default-features = false, features = ["text", "unicode"] }
+
 [dev-dependencies]
 # For the example generators only; not part of the library's dependency graph.
 anyhow = { workspace = true }
@@ -49,3 +59,5 @@ export-json = [] # serde_json is already a non-optional dependency
 export-pdf = ["dep:printpdf"]
 export-docx = ["dep:docx-rs"]
 export-all = ["export-html", "export-md", "export-csv", "export-json", "export-pdf", "export-docx"]
+# The diff engine (FR-W6) is opt-in; it pulls `similar` only when enabled.
+diff = ["dep:similar"]
