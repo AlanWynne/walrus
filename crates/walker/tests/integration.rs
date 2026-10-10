@@ -31,8 +31,15 @@ fn story_wal_reconstructs_selects_text_and_exports_every_offered_format() {
     let path = story_path();
     let file = WalrusFile::open(&path).expect("the narrated demo .wal opens");
 
-    // The demo's document.mime is text/plain -> the Text (or Code) path.
-    let doc = file.manifest().document.clone();
+    // The demo's document mime is text/plain -> the Text (or Code) path.
+    // Document metadata is per-file now; the single-document demo keeps it on
+    // the first tracked file.
+    let doc = file
+        .manifest()
+        .files
+        .first()
+        .expect("the demo manifest tracks one file")
+        .clone();
     assert_eq!(
         doc.mime, "text/plain",
         "the demo stores a text/plain document"
