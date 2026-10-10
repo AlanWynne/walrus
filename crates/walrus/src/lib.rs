@@ -21,14 +21,18 @@ mod manifest;
 mod reconstruct;
 mod record;
 mod version;
+mod wchg;
 mod write;
 
 pub mod export;
 
 pub use error::{Result, WalrusError};
-pub use manifest::{Checkpoint, DocumentInfo, Manifest, Variant, Versions};
+pub use manifest::{
+    Checkpoint, FileAttributes, Manifest, RebaseInfo, TrackedFile, Variant, Versions,
+};
 pub use record::{ChangeRecord, Op};
 pub use version::Version;
+pub use wchg::{Direction, WchgHeader};
 
 /// An opened Walrus file: the decompressed base, the manifest, and the log.
 ///

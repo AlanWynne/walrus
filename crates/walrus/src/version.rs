@@ -32,7 +32,7 @@ pub(crate) fn resolve(manifest: &Manifest, len: usize, version: Version) -> Resu
         Version::ForwardFromBase(n) => n.min(len),
         Version::BackFromHead(n) => len.saturating_sub(n),
         Version::Label(label) => manifest
-            .checkpoints
+            .checkpoints()
             .iter()
             .find(|c| c.label == label)
             .map(|c| c.index)
@@ -57,7 +57,7 @@ mod tests {
 
     fn manifest_with_checkpoints() -> Manifest {
         let mut m = Manifest::new_wal(10);
-        m.checkpoints = vec![crate::manifest::Checkpoint {
+        m.files[0].checkpoints = vec![crate::manifest::Checkpoint {
             index: 4,
             label: "milestone".to_string(),
         }];

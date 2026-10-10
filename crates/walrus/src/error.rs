@@ -25,6 +25,10 @@ pub enum WalrusError {
     #[error("invalid manifest: {0}")]
     Manifest(String),
 
+    /// A `.wchg` header line was missing, not a `wchg` object, or malformed.
+    #[error("invalid .wchg header: {0}")]
+    WchgHeader(String),
+
     /// A change-log line failed to parse.
     #[error("invalid change record on line {line}: {reason}")]
     Record {
