@@ -35,6 +35,33 @@ session can pick up without re-discovering it.
   GUI-free in-memory backend cannot satisfy without bundling font binaries, so
   printpdf's standard-14 built-in Helvetica was chosen (design 7.2/7.3). No new
   MSRV bump beyond the existing 1.95 (egui 0.36); the export crates build on it.
+- `walker` content-aware viewer (FEAT-002): the renderer is chosen per-document
+  by a pure `view::select_renderer(mime, name)` (the old `View` enum and fixed
+  CSV tab are gone). Renderers: safe-subset HTML and Markdown lowered to one
+  shared `richtext` `Block`/`Inline` model and painter (untrusted -- scripts
+  DROPPED, images are placeholders, no remote fetch); a CSV column grid via
+  `egui_extras::TableBuilder` (CSV only for actual `text/csv`); syntax-highlighted
+  Code/JSON/TOML/XML/source via `egui_extras::syntax_highlighting` (JSON
+  pretty-printed first, unknown language -> monospace); and a plain monospace
+  Text fallback. Playback speed is a multiplier (0.25x..4x presets + fine slider)
+  over a 400 ms base via the pure `transport::interval_for_multiplier` driving
+  the existing `Player::set_step_interval`. Theming uses egui's built-in
+  `Visuals`/`ThemePreference` (`ThemeMode {System,Light,Dark}`, default Dark;
+  catppuccin dropped). FFWB-style chrome (menu bar File/View/Theme + toolbar +
+  status bar) with NO command line and NO `ff-*` dependency. Per-document export
+  menu driven by `walrus_fmt::export::offered_formats`, with an `rfd` save dialog
+  and the real `to_*` backends. walker-side viewer deps pinned to the exporter's
+  minors (`egui_extras 0.36`, `pulldown-cmark 0.11`, `csv 1.3`). Verified by pure
+  unit tests (selection, HTML/Markdown lowering with script-dropped/img-
+  placeholder, speed arithmetic + clamp, theme transition), a headless
+  `egui_kittest` harness test (speed preset drives the model interval), and a
+  `walrus-story.wal` round-trip exporting to every offered format.
+  NOTE on `egui_extras 0.36`: it has NO `syntax_highlighting` cargo feature (the
+  design named one that does not exist); the `syntax_highlighting` module and
+  `TableBuilder` are both unconditional, so walker depends on
+  `egui_extras = { version = "0.36", default-features = false }` with no features.
+  The confirmed `highlight(ctx, style, theme, code, language) -> LayoutJob` arity
+  matches design 2.1 and is recorded in `view/code.rs`.
 - Container WRITER (`write.rs`): serialise manifest + base + log into zstd(tar).
   Public API: `WalrusFile::new_wal`, `to_bytes`, `write`. Round-trip unit test
   confirms every version index reconstructs byte-identically after write+read.
@@ -51,7 +78,10 @@ session can pick up without re-discovering it.
 3. `.wal <-> .wbl` conversion (`walx convert`): invert splices, re-base.
 4. Timestamp version addressing (`--at T`), per FORMAT.md section 5.
 5. (DONE -- see "Done" above) Export backends restructured and implemented.
-6. CSV column viewer in `walker` (`View::Csv`): parse + aligned sortable grid.
+6. (DONE -- see "Done" above) CSV column viewer in `walker`, now part of the
+   content-aware viewer: a `text/csv` document renders as an aligned, scrollable
+   `egui_extras::TableBuilder` grid (`view/csv.rs`). Sorting is not implemented
+   (deferred); the grid is aligned and scrollable.
 7. (DONE -- see "Done" above) The walking-walrus `walrus.wal` demo fixture:
    `generate_walk.rs` produces it and `examples/walrus.wal` is committed.
 8. (DONE -- see "Done" above) GUI test approach: egui_kittest 0.36 is the chosen
