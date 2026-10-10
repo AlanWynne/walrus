@@ -61,7 +61,8 @@ impl WalkerApp {
         Self::default()
     }
 
-    /// Open a Walrus file, position at the base, and derive the renderer.
+    /// Open a Walrus file, position at the current version, and derive the
+    /// renderer.
     fn open_file(&mut self, path: std::path::PathBuf) {
         match WalrusFile::open(&path) {
             Ok(file) => {

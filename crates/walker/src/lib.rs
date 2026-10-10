@@ -9,6 +9,7 @@ pub mod app;
 pub mod chrome;
 pub mod export_ui;
 pub mod player;
+pub mod source;
 pub mod theme;
 pub mod transport;
 pub mod view;

@@ -36,13 +36,17 @@ pub fn set_speed_multiplier(player: &mut Player, mult: f64) {
 pub fn controls(ui: &mut egui::Ui, player: &mut Player, multiplier: &mut f64) -> bool {
     let mut changed = false;
 
+    // The timeline reads left-to-right as oldest -> current: index 0 (current)
+    // is the right-hand end and the highest index (oldest) is the left-hand
+    // end. "older" steps back in time (increasing the index); "newer" steps
+    // forward in time (decreasing the index).
     ui.horizontal(|ui| {
-        if ui.button("|< base").clicked() {
-            player.seek(0);
+        if ui.button("|< oldest").clicked() {
+            player.seek(player.len());
             changed = true;
         }
-        if ui.button("< step").clicked() {
-            changed |= player.step_backward();
+        if ui.button("< older").clicked() {
+            changed |= player.step_older();
         }
         let play_label = if player.is_playing() { "pause" } else { "play" };
         if ui.button(play_label).clicked() {
@@ -52,23 +56,23 @@ pub fn controls(ui: &mut egui::Ui, player: &mut Player, multiplier: &mut f64) ->
                 player.play();
             }
         }
-        if ui.button("step >").clicked() {
-            changed |= player.step_forward();
+        if ui.button("newer >").clicked() {
+            changed |= player.step_newer();
         }
-        if ui.button("head >|").clicked() {
-            player.seek(player.len());
+        if ui.button("current >|").clicked() {
+            player.seek(0);
             changed = true;
         }
     });
 
     ui.horizontal(|ui| {
-        let mut forward = player.direction() == Direction::Forward;
-        if ui.selectable_label(forward, "forward").clicked() {
-            forward = true;
-            player.set_direction(Direction::Forward);
+        let mut older = player.direction() == Direction::Older;
+        if ui.selectable_label(older, "older").clicked() {
+            older = true;
+            player.set_direction(Direction::Older);
         }
-        if ui.selectable_label(!forward, "backward").clicked() {
-            player.set_direction(Direction::Backward);
+        if ui.selectable_label(!older, "newer").clicked() {
+            player.set_direction(Direction::Newer);
         }
         let mut looping = player.looping();
         if ui.checkbox(&mut looping, "loop").changed() {

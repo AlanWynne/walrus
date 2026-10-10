@@ -1,7 +1,8 @@
 //! walker -- an egui viewer and auto-player for .wal / .wbl files.
 //!
-//! Browse versions, auto-play forward or backward with loop and speed, export a
-//! selected version, and view CSV files as columns. The format and playback
+//! Browse versions, auto-play toward older or newer versions with loop and
+//! speed, export a selected version, and view CSV files as columns. Index 0 is
+//! the current version; a higher index is older. The format and playback
 //! logic live in `walrus_fmt` and the `player` module respectively.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
