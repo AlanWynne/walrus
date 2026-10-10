@@ -4,6 +4,10 @@ Version: 0.1 (draft)
 Status: DRAFT -- multi-file revision. Subject to change until 1.0. This revision
 replaces the earlier single-file framing: an archive now holds MANY tracked
 files, and the inner per-file change log is a `.wchg` file with its own header.
+This revision also DECOUPLES per-file direction from the archive variant and the
+file extension: the per-file `.wchg` `direction` is the sole authority for how a
+file reconstructs, the archive `variant` only seeds the default direction for
+newly added files, and an archive MAY hold a mix of forward and reverse files.
 
 This document defines the `.wal` and `.wbl` container formats independently of
 any implementation, so the formats can be read and written in any language. The
@@ -33,20 +37,33 @@ There are two symmetric variants:
 .wbl :  current  (base)  - reverse_log  = original
 ```
 
-The variant applies PER TRACKED FILE: in a `.wal` every tracked file stores its
-original as the base and a forward log; in a `.wbl` every tracked file stores its
-current text as the base and a reverse log.
+Direction is a PER-FILE property, not an archive-wide rule. Each tracked file
+carries its own `direction` in its `.wchg` header (section 4.2), and THAT header
+is the sole authority for how the file reconstructs. The extension (`.wal` /
+`.wbl`) and the manifest `variant` are CONVENTIONS and DEFAULTS -- they are never
+consulted to reconstruct a file. A single archive MAY therefore hold a mix of
+forward and reverse files under either extension.
 
-Rationale:
-- `.wal` favours cheap append-on-save: new edits append to a file's forward log
-  and its base (original) never moves.
-- `.wbl` favours distribution: each base IS the current, correct text, so a
-  naive reader that extracts only the bases already sees the right content.
+By convention (not by rule):
+- a `.wal` archive is forward-heavy: it defaults newly added files to a forward
+  log over an original base, favouring cheap append-on-save (the base never
+  moves as edits append).
+- a `.wbl` archive is reverse-heavy: it defaults newly added files to a reverse
+  log over a current base, favouring distribution (each base IS the current,
+  correct text, so a naive reader that extracts only the bases already sees the
+  right content).
 
-The two are inter-convertible: applying every log record to one base yields the
-other base, and inverting each record yields the other direction's log. The
-`walrus` tool performs `.wal <-> .wbl` conversion (and all other management
-operations); `walx` is the extract-only companion.
+"Forward" and "reverse" below describe a single file's log:
+
+```
+forward file :  original (base)  + forward_log  = current
+reverse file :  current  (base)  - reverse_log  = original
+```
+
+The two senses are inter-convertible: applying every log record to one base
+yields the other base, and inverting each record yields the other direction's
+log. The `walrus` tool performs this conversion per file (and all other
+management operations); `walx` is the extract-only companion.
 
 ---
 
@@ -64,8 +81,10 @@ A reader MUST sniff the outer codec from magic bytes:
 - zstd: `0x28 0xB5 0x2F 0xFD`
 - gzip: `0x1F 0x8B`
 
-The file extension (`.wal` / `.wbl`) selects the VARIANT semantics (which end is
-the base, which direction each log replays), not the compression codec.
+The file extension (`.wal` / `.wbl`) is a CONVENTIONAL hint for the archive's
+default direction (section 3), not the compression codec and not a per-file
+reconstruction rule. Each file's `.wchg` `direction` is authoritative for how
+that file replays (section 4.2).
 
 ### 2.1 Tar members (per-file layout)
 
@@ -148,8 +167,20 @@ one entry per tracked file.
 ```
 
 Archive-level field notes:
-- `variant` is `"wal"` or `"wbl"`; `base_role` and `log_direction` MUST agree
-  with the table in section 1 and apply to every tracked file in the archive.
+- `variant` is ALWAYS a concrete `"wal"` or `"wbl"` (never `"mixed"`). Its ONLY
+  job is to drive the DEFAULT direction for newly added files: `wal` defaults a
+  new file to forward, `wbl` defaults it to reverse (section 5). It is
+  informational for defaulting and is NEVER consulted to reconstruct a file --
+  reconstruction direction comes from each file's `.wchg` header (section 4.2).
+  A file whose direction differs from the archive `variant` is LEGAL.
+- `base_role` and `log_direction` are DERIVED DESCRIPTORS of what `variant`
+  defaults to (`wal` -> original base / forward log; `wbl` -> current base /
+  reverse log). They describe the DEFAULT for new files, not a per-file
+  constraint, and do not override any file's own `.wchg` `direction`.
+- "Mixedness" (an archive holding both forward and reverse files) is an
+  EMERGENT, COMPUTED property, derived by scanning the per-file `.wchg` headers.
+  It is NOT a stored manifest value; `variant` never becomes `"mixed"`. A
+  listing tool (e.g. `walrus query -l`) MAY surface that an archive is mixed.
 - `created` and `generator` describe the archive provenance.
 
 Per-file field notes (each element of `files`):
@@ -248,8 +279,10 @@ Header fields:
     original version (the `.wbl` sense).
   A reader opening a bare `.wchg` outside any archive uses `direction` to know
   which base the log expects and which way to replay, without consulting a
-  parent archive's extension. The direction of a file's `.wchg` MUST agree with
-  the archive `variant` (`forward` for `.wal`, `reverse` for `.wbl`).
+  parent archive's extension. This `direction` is PER FILE and AUTHORITATIVE for
+  reconstruction; it does NOT have to agree with the archive `variant`. The
+  archive `variant` only seeds the DEFAULT direction for newly added files
+  (section 5); a file may be forward or reverse under either archive variant.
 - `generations` -- the retention cap (section 4.3). `0` = unlimited (default);
   integer `N >= 1` = rolling window of N versions. This field is authoritative;
   the manifest mirrors it.
@@ -329,6 +362,19 @@ A `direction: "reverse"` log stores the already-inverted form so that applying
 its records top-to-bottom walks CURRENT -> ... -> ORIGINAL; a
 `direction: "forward"` log walks ORIGINAL -> ... -> CURRENT.
 
+How a writer OBTAINS the splice for a save is not constrained by the format. A
+writer MAY diff old-vs-new text to compute the net splice, OR take it directly
+from a caller's edit journal / piece list coalesced into the single NET splice
+for that save (one record per save, see section 5). Either way the stored record
+is the same byte-offset splice -- this is NOT a new record type (the splice stays
+the single primitive). The caller always supplies the FORWARD-sense edit (what it
+did to move from the old version to the new one); the writer then applies the
+file's stored direction: for a `direction: "forward"` file it stores the splice
+as-is and the base (original) is unchanged; for a `direction: "reverse"` file it
+INVERTS the incoming forward splice and ADVANCES the base to the new current
+bytes. Direction handling therefore lives entirely in the writer; the caller
+neither knows nor cares about the file's direction.
+
 ### 4.5 Checkpoint records (optional)
 
 A record line may instead be a checkpoint marker that carries a full snapshot
@@ -357,17 +403,21 @@ integer **index** in that file's `[0, count]`:
 4. **Relative**: `current +/- n`, `head - n`, or `base +/- n`, evaluated within
    the file's own range.
 
-Reconstruction for a file:
-- `.wal` (`direction: "forward"`): the base is the original. The current version
-  is at the head; to reach index `k` (where index 0 is current and `count` is
-  the original), apply the forward records needed to arrive at that version.
-- `.wbl` (`direction: "reverse"`): the base is the current (index 0). To reach
-  index `k`, apply the first `k` reverse records (walking back toward the
+Reconstruction for a file is driven by that file's OWN `.wchg` `direction`
+header (section 4.2), NOT by the archive `variant` or the file extension:
+- forward file (`direction: "forward"`): the base is the original. The current
+  version is at the head; to reach index `k` (where index 0 is current and
+  `count` is the original), apply the forward records needed to arrive at that
+  version.
+- reverse file (`direction: "reverse"`): the base is the current (index 0). To
+  reach index `k`, apply the first `k` reverse records (walking back toward the
   original at index `count`).
 
 An implementation MUST produce byte-identical output for the same index of the
-same tracked file regardless of variant, once the variant's base and direction
-are accounted for.
+same tracked file regardless of direction, once that file's base and direction
+are accounted for. This is a PER-FILE guarantee; because direction is per file,
+an archive may mix forward and reverse files and each still reconstructs from its
+own header.
 
 ---
 
@@ -380,7 +430,9 @@ A conforming reader MUST:
 - for each tracked file, read its `files/<id>/base` and parse its
   `files/<id>/<name>.wchg` header line before the records;
 - reconstruct any index in a file's `[0, count]` by replaying that file's
-  splices in the direction its `.wchg` header declares;
+  splices in the direction its OWN `.wchg` header declares -- NOT the archive
+  `variant` or the file extension, and WITHOUT requiring the file's direction to
+  match the archive `variant` (a mixed-direction archive is legal);
 - treat each file's `base` bytes using that file's declared `encoding`.
 
 - split `.wchg` lines on LF only and REJECT a CRLF-terminated (trailing `\r`)
