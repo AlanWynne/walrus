@@ -78,6 +78,13 @@ pub enum WalrusError {
     #[error("unknown checkpoint label: {0}")]
     UnknownCheckpoint(String),
 
+    /// A `reconstruct` call named a file id with no backing tracked file.
+    #[error("unknown file id: {id}")]
+    UnknownFile {
+        /// The file id that did not match any tracked file.
+        id: String,
+    },
+
     /// A splice referenced a byte offset outside the current document.
     #[error("splice out of bounds at offset {at} (document length {len})")]
     SpliceOutOfBounds {

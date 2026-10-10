@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
     // the art's own built-in leading spaces do not skew the check.
     let reopened = WalrusFile::open(&out)?;
     let base_frame = reopened.reconstruct(walrus_fmt::Version::Index(0))?;
-    let head_frame = reopened.reconstruct(walrus_fmt::Version::Head)?;
+    let head_frame = reopened.reconstruct_head()?;
     let shift = leading_spaces(&head_frame) - leading_spaces(&base_frame);
     println!("wrote {} ({} versions)", out.display(), reopened.len());
     println!("  verify: walrus shifted {shift} columns base->head (expected {STEPS})");

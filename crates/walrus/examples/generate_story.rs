@@ -106,7 +106,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "  verify: version 0 is {} bytes, head is {} bytes",
         reopened.reconstruct(walrus_fmt::Version::Index(0))?.len(),
-        reopened.reconstruct(walrus_fmt::Version::Head)?.len(),
+        reopened.reconstruct_head()?.len(),
     );
     Ok(())
 }
