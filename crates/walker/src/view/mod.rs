@@ -10,10 +10,12 @@ pub mod csv;
 pub mod html;
 mod html_token;
 pub mod markdown;
+pub mod present;
 pub mod richtext;
 pub mod selector;
 pub mod text;
 
+pub use present::{render, select_renderer_for};
 pub use selector::{select_renderer, CodeLang, Renderer};
 
 use eframe::egui;
