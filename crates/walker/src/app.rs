@@ -18,7 +18,9 @@ use eframe::egui;
 use walrus_fmt::{Variant, WalrusFile};
 
 use crate::chrome::{self, ExportContext, StatusInfo};
+use crate::navigator::{self, NavigatorState};
 use crate::player::Player;
+use crate::source::{HistorySource, VersionId, WalrusSource};
 use crate::theme::{self, ThemeMode};
 use crate::transport;
 use crate::view::{self, Renderer};
@@ -26,6 +28,13 @@ use crate::view::{self, Renderer};
 /// The Walker application state.
 pub struct WalkerApp {
     player: Option<Player>,
+    /// The format-agnostic history source for the open archive, if any. The
+    /// navigator and the trait-driven viewer path are coded to this seam; the
+    /// `WalrusSource` concrete type is named ONLY where it is constructed
+    /// (`open_file`).
+    source: Option<Box<dyn HistorySource>>,
+    /// The navigator's selection model (active file + multi-select set).
+    navigator: NavigatorState,
     /// Cached current-version bytes, refreshed on change.
     current_bytes: Vec<u8>,
     /// The renderer derived from the loaded document's MIME and name.
@@ -44,6 +53,8 @@ impl Default for WalkerApp {
     fn default() -> Self {
         Self {
             player: None,
+            source: None,
+            navigator: NavigatorState::default(),
             current_bytes: Vec::new(),
             renderer: Renderer::Text,
             status: "Open a .wal or .wbl file to begin.".to_string(),
@@ -74,6 +85,28 @@ impl WalkerApp {
                 self.refresh_bytes(&player);
                 self.status = format!("Opened {} ({} versions)", path.display(), player.len());
                 self.player = Some(player);
+
+                // Also build the format-agnostic source for the same archive so
+                // the navigator can list every tracked file and bind selection
+                // through the seam. This is the ONLY app-shell site that names
+                // `WalrusSource`; the navigator and viewer path see `&dyn
+                // HistorySource` only.
+                match WalrusSource::open(&path) {
+                    Ok(source) => {
+                        // Default the active selection to the first tracked file
+                        // so the viewer binds through the seam immediately.
+                        if let Some(first) = source.files().first() {
+                            self.navigator.select(first);
+                            self.renderer = navigator_renderer(&source, &self.navigator);
+                        }
+                        self.source = Some(Box::new(source));
+                    }
+                    Err(e) => {
+                        self.source = None;
+                        self.status =
+                            format!("Opened {} (navigator unavailable: {e})", path.display());
+                    }
+                }
             }
             Err(e) => {
                 self.status = format!("Failed to open {}: {e}", path.display());
@@ -116,6 +149,16 @@ impl WalkerApp {
         let (name, mime) = document_name_and_mime(player.manifest());
         let offered = walrus_fmt::export::offered_formats(&mime);
         Some((offered, mime, name))
+    }
+}
+
+/// The renderer for the navigator's active file, chosen through the seam.
+///
+/// Falls back to [`Renderer::Text`] when there is no active selection.
+fn navigator_renderer(source: &dyn HistorySource, navigator: &NavigatorState) -> Renderer {
+    match navigator.active() {
+        Some(active) => view::present::select_renderer_for(source, active),
+        None => Renderer::Text,
     }
 }
 
@@ -184,6 +227,30 @@ impl eframe::App for WalkerApp {
             }
         });
 
+        // Left navigator: the two-pane file/import browser (FR-K4). Rendered
+        // only when a source is open; selecting a file rebinds the viewer
+        // through the seam.
+        if self.source.is_some() {
+            let mut activated = None;
+            egui::Panel::left("navigator").show(ui, |ui| {
+                let source = self.source.as_deref().expect("source is Some");
+                let action = navigator::panels(ui, source, &mut self.navigator);
+                activated = action.activated;
+            });
+            if activated.is_some() {
+                // The active file changed: rebind the viewer's renderer through
+                // the seam. The central viewer reconstructs the active file at
+                // the player's current index via `view::render`, so selection
+                // binds the viewer to that file's version timeline (AC2). A live
+                // per-file `Player` rebind is deferred app-shell wiring: `Player`
+                // owns a `WalrusFile` the seam does not expose, so FR-K4 binds
+                // through the trait (model-level AC2, proven headlessly).
+                if let Some(source) = self.source.as_deref() {
+                    self.renderer = navigator_renderer(source, &self.navigator);
+                }
+            }
+        }
+
         // Bottom status bar.
         let variant = self.variant_str();
         let renderer_label = renderer_label(&self.renderer);
@@ -227,8 +294,18 @@ impl eframe::App for WalkerApp {
 
             ui.separator();
             if self.player.is_some() {
+                let version = VersionId::Index(self.player.as_ref().map_or(0, Player::index));
+                let active = self.navigator.active().cloned();
                 egui::ScrollArea::both().show(ui, |ui| {
-                    view::paint(ui, &self.renderer, &self.current_bytes);
+                    match (self.source.as_deref(), active.as_ref()) {
+                        // Drive the viewer through the seam for the selected
+                        // file: reconstruct + paint via one byte path (AC2).
+                        (Some(source), Some(active)) => {
+                            view::render(ui, source, active, &version);
+                        }
+                        // No source/selection yet: the single-document fallback.
+                        _ => view::paint(ui, &self.renderer, &self.current_bytes),
+                    }
                 });
             }
         });

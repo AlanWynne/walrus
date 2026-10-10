@@ -15,7 +15,7 @@
 use anyhow::{Context, Result};
 use walrus_fmt::{Archive, FileId, Version};
 
-use super::{FileRef, HistorySource, VersionId, VersionMeta};
+use super::{FileInfo, FileRef, HistorySource, VersionId, VersionMeta};
 
 // === WalrusSource =======================================================
 
@@ -65,6 +65,12 @@ impl WalrusSource {
     fn splice_count(&self, index: usize) -> Option<usize> {
         self.archive.files().nth(index).map(|t| t.versions.count)
     }
+
+    /// The tracked file at the [`FileRef`]'s 0-based manifest position, or
+    /// `None` for a stale or foreign ref.
+    fn tracked(&self, f: &FileRef) -> Option<&walrus_fmt::TrackedFile> {
+        self.archive.files().nth(f.id())
+    }
 }
 
 // === HistorySource ======================================================
@@ -108,6 +114,58 @@ impl HistorySource for WalrusSource {
         match self.archive.files().nth(f.id()) {
             Some(tracked) => (tracked.mime.clone(), tracked.name.clone()),
             None => (String::new(), String::new()),
+        }
+    }
+
+    fn file_info(&self, f: &FileRef) -> FileInfo {
+        let Some(tracked) = self.tracked(f) else {
+            // A stale or foreign ref yields a zeroed listing rather than panics.
+            return FileInfo {
+                index_size: 0,
+                generations: None,
+                size_bytes: 0,
+                log_bytes: 0,
+                mime: String::new(),
+            };
+        };
+        // Indices span [0, count] inclusive, so the version count is count + 1.
+        let index_size = tracked.versions.count + 1;
+        // generations == 0 means unlimited in the 0.1 format.
+        let generations = (tracked.generations != 0).then_some(tracked.generations);
+        let size_bytes = self
+            .reconstruct(f, &VersionId::Index(0))
+            .map(|bytes| bytes.len() as u64)
+            .unwrap_or(0);
+        let log_bytes = self.log_bytes(f);
+        FileInfo {
+            index_size,
+            generations,
+            size_bytes,
+            log_bytes,
+            mime: tracked.mime.clone(),
+        }
+    }
+}
+
+impl WalrusSource {
+    /// The derived change-log byte figure for `f`: the deterministic sum of the
+    /// serialized JSON byte lengths of each change record (there is no raw
+    /// `log_bytes` accessor on the archive). Returns 0 when the file has no
+    /// records or the ref is foreign.
+    fn log_bytes(&self, f: &FileRef) -> u64 {
+        let Some(id) = self.file_id(f) else {
+            return 0;
+        };
+        match self.archive.records(id.as_str()) {
+            Some(records) => records
+                .iter()
+                .map(|record| {
+                    serde_json::to_vec(record)
+                        .map(|v| v.len() as u64)
+                        .unwrap_or(0)
+                })
+                .sum(),
+            None => 0,
         }
     }
 }
@@ -413,6 +471,80 @@ mod tests {
         // The original end (index == count) has no producing record, so none.
         let original = source.metadata(&source.files()[0], &VersionId::Index(1));
         assert_eq!(original.timestamp, None);
+    }
+
+    // === file_info (FR-K4, Option A) ====================================
+
+    #[test]
+    fn walrus_file_info_index_size_is_splice_count_plus_one() {
+        // One splice -> count 1 -> indices [0, 1] inclusive -> index_size 2.
+        let records = [ChangeRecord::splice(2, 0, "!")];
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let file = &source.files()[0];
+        assert_eq!(source.file_info(file).index_size, 2);
+        assert_eq!(
+            source.file_info(file).index_size,
+            source.versions(file).len()
+        );
+    }
+
+    #[test]
+    fn walrus_file_info_generations_zero_maps_to_none() {
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &[]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        // TrackedFile::new_with_direction defaults generations to 0 = unlimited.
+        assert_eq!(source.file_info(&source.files()[0]).generations, None);
+    }
+
+    #[test]
+    fn walrus_file_info_log_bytes_sums_serialized_record_lengths() {
+        let records = [
+            ChangeRecord::splice(0, 0, "a"),
+            ChangeRecord::splice(1, 0, "bc"),
+        ];
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let expected: u64 = records
+            .iter()
+            .map(|r| serde_json::to_vec(r).expect("ser").len() as u64)
+            .sum();
+        assert_eq!(source.file_info(&source.files()[0]).log_bytes, expected);
+    }
+
+    #[test]
+    fn walrus_file_info_size_bytes_is_the_current_reconstruction_length() {
+        // base "hi" + insert "!" at offset 2 -> current "hi!" (3 bytes).
+        let records = [ChangeRecord::splice(2, 0, "!")];
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let file = &source.files()[0];
+        let current_len = source
+            .reconstruct(file, &VersionId::Index(0))
+            .expect("cur")
+            .len() as u64;
+        assert_eq!(source.file_info(file).size_bytes, current_len);
+        assert_eq!(source.file_info(file).size_bytes, 3);
+    }
+
+    #[test]
+    fn walrus_file_info_mime_matches_the_tracked_mime() {
+        let bytes = single_forward_container("f0", "notes.txt", b"hi", &[]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(source.file_info(&source.files()[0]).mime, "text/plain");
+    }
+
+    #[test]
+    fn walrus_file_info_for_an_unknown_ref_is_zeroed() {
+        let bytes = single_forward_container("f0", "notes.txt", b"hi", &[]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let foreign = FileRef::new(99, "ghost.txt");
+        let info = source.file_info(&foreign);
+        assert_eq!(info.index_size, 0);
+        assert_eq!(info.size_bytes, 0);
+        assert_eq!(info.log_bytes, 0);
+        assert_eq!(info.generations, None);
+        assert!(info.mime.is_empty());
     }
 
     #[test]

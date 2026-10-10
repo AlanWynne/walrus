@@ -44,6 +44,27 @@ pub struct VersionMeta {
     pub author: Option<String>,
 }
 
+/// Per-file facts the navigator lists and FR-K7 colours, read through the seam.
+///
+/// This is a plain walker-side value: it carries NO `walrus_fmt` types, so the
+/// FR-K1 AC2 boundary (no archive types outside `source/walrus.rs`) holds. It
+/// bundles everything both the FR-K4 listing (index size, generation cap,
+/// current size) and the FR-K7 bloat ratio (`R = log_bytes / size_bytes`) need,
+/// so both compute from the trait alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileInfo {
+    /// Number of versions, equal to `versions(f).len()`.
+    pub index_size: usize,
+    /// Generation (retention) cap; `None` means unlimited.
+    pub generations: Option<u32>,
+    /// Current-version byte length (display value + FR-K7 bloat denominator).
+    pub size_bytes: u64,
+    /// Total change-log byte size (FR-K7 bloat numerator).
+    pub log_bytes: u64,
+    /// The file's MIME type.
+    pub mime: String,
+}
+
 /// Identifies a tracked file within an archive.
 ///
 /// A `FileRef` carries the minimal data needed to look a file up in its source
@@ -99,6 +120,14 @@ pub trait HistorySource {
 
     /// A `(mime, name)` hint for picking a renderer/exporter for file `f`.
     fn content_hint(&self, f: &FileRef) -> (String, String);
+
+    /// Per-file facts for the navigator listing and the FR-K7 bloat ratio.
+    ///
+    /// Returns index size, generation cap, current size, the change-log byte
+    /// figure, and the MIME. A stale or foreign `f` yields a zeroed `FileInfo`
+    /// with an empty mime rather than an error (listings must not panic on a
+    /// bad ref).
+    fn file_info(&self, f: &FileRef) -> FileInfo;
 }
 
 // === Test support ===================================================
@@ -110,7 +139,7 @@ pub trait HistorySource {
 /// a live archive. It is NOT part of the shipped product surface -- only the
 /// test tree constructs it.
 pub mod testsupport {
-    use super::{FileRef, HistorySource, Result, VersionId, VersionMeta};
+    use super::{FileInfo, FileRef, HistorySource, Result, VersionId, VersionMeta};
 
     /// A single canned file: its reference, a mime hint, and ordered versions.
     struct Entry {
@@ -234,6 +263,25 @@ pub mod testsupport {
                 None => (String::new(), String::new()),
             }
         }
+
+        fn file_info(&self, f: &FileRef) -> FileInfo {
+            match self.lookup(f) {
+                Some(e) => FileInfo {
+                    index_size: e.versions.len(),
+                    generations: None,
+                    size_bytes: e.versions.first().map(|v| v.len() as u64).unwrap_or(0),
+                    log_bytes: e.versions.iter().map(|v| v.len() as u64).sum(),
+                    mime: e.mime.clone(),
+                },
+                None => FileInfo {
+                    index_size: 0,
+                    generations: None,
+                    size_bytes: 0,
+                    log_bytes: 0,
+                    mime: String::new(),
+                },
+            }
+        }
     }
 }
 
@@ -348,6 +396,29 @@ mod tests {
                 None => (String::new(), String::new()),
             }
         }
+
+        fn file_info(&self, f: &FileRef) -> FileInfo {
+            match self.lookup(f) {
+                Some(file) => FileInfo {
+                    index_size: file.versions.len(),
+                    generations: None,
+                    size_bytes: file
+                        .versions
+                        .first()
+                        .map(|v| v.bytes.len() as u64)
+                        .unwrap_or(0),
+                    log_bytes: file.versions.iter().map(|v| v.bytes.len() as u64).sum(),
+                    mime: file.mime.clone(),
+                },
+                None => FileInfo {
+                    index_size: 0,
+                    generations: None,
+                    size_bytes: 0,
+                    log_bytes: 0,
+                    mime: String::new(),
+                },
+            }
+        }
     }
 
     #[test]
@@ -420,5 +491,102 @@ mod tests {
         let (mime, name) = source.content_hint(data);
         assert_eq!(mime, "text/csv");
         assert_eq!(name, "data.csv");
+    }
+
+    // === file_info (FR-K4, Option A) ====================================
+
+    #[test]
+    fn file_info_reports_index_size_as_version_count() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0];
+        assert_eq!(
+            source.file_info(readme).index_size,
+            source.versions(readme).len(),
+            "index size must equal the number of versions"
+        );
+        assert_eq!(source.file_info(readme).index_size, 2);
+    }
+
+    #[test]
+    fn file_info_reports_generations_none_for_in_memory_sources() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0];
+        assert_eq!(source.file_info(readme).generations, None);
+    }
+
+    #[test]
+    fn file_info_size_bytes_is_the_current_version_length() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0];
+        // Slot 0 is the current version: b"current readme".
+        assert_eq!(
+            source.file_info(readme).size_bytes,
+            "current readme".len() as u64
+        );
+    }
+
+    #[test]
+    fn file_info_log_bytes_sums_version_byte_lengths_for_in_memory_sources() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0];
+        let expected = ("current readme".len() + "older readme".len()) as u64;
+        assert_eq!(source.file_info(readme).log_bytes, expected);
+    }
+
+    #[test]
+    fn file_info_mime_matches_the_content_hint() {
+        let source = FakeSource::sample();
+        let data = &source.files()[1];
+        assert_eq!(source.file_info(data).mime, "text/csv");
+    }
+
+    #[test]
+    fn file_info_for_an_unknown_ref_is_zeroed() {
+        let source = FakeSource::sample();
+        let foreign = FileRef::new(99, "ghost.txt");
+        let info = source.file_info(&foreign);
+        assert_eq!(
+            info,
+            FileInfo {
+                index_size: 0,
+                generations: None,
+                size_bytes: 0,
+                log_bytes: 0,
+                mime: String::new(),
+            }
+        );
+    }
+
+    // === InMemorySource file_info =======================================
+
+    #[test]
+    fn in_memory_file_info_size_bytes_is_the_current_version_length() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let readme = source.file_named("README.md");
+        // Slot 0 current: b"# Current\n\ncurrent readme".
+        assert_eq!(
+            source.file_info(&readme).size_bytes,
+            "# Current\n\ncurrent readme".len() as u64
+        );
+    }
+
+    #[test]
+    fn in_memory_file_info_log_bytes_sums_version_byte_lengths() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let readme = source.file_named("README.md");
+        let expected =
+            ("# Current\n\ncurrent readme".len() + "# Older\n\nolder readme".len()) as u64;
+        assert_eq!(source.file_info(&readme).log_bytes, expected);
+    }
+
+    #[test]
+    fn in_memory_file_info_mime_matches_the_content_hint() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let data = source.file_named("data.csv");
+        assert_eq!(source.file_info(&data).mime, "text/csv");
+        assert_eq!(source.file_info(&data).generations, None);
     }
 }
