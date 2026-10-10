@@ -101,6 +101,14 @@ The crates.io name `walrus` is already taken by an unrelated WebAssembly crate,
 so the library package is published as **`walrus-fmt`**. The repository, the GUI
 binary (`walker`), and the mascot keep the name "Walrus".
 
+## Authors and acknowledgements
+
+- **Alan Wynne** -- creator, format and CLI design, project direction.
+
+Built with AI-assisted development (Kiro).
+
+Full contribution history is in the git log and the GitHub contributors graph.
+
 ## License
 
 Dual-licensed under either of
