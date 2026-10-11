@@ -9,10 +9,9 @@
 //!
 //! Import is the first WRITE path in the GUI. The in-memory mutate goes through
 //! a crate-private [`MutateArchive`] seam so the ORCHESTRATION (resolve ->
-//! `add`/`update` -> refresh) is unit-tested against a `FakeArchive` without the
-//! real `walrus_fmt` mutate op (`Archive::add`/`update`, FR-W7), which is a
-//! cross-stream dependency not yet merged on this branch. The real impl + the
-//! `WalrusSource::import` method live behind the `import-mutate` cargo feature.
+//! `add`/`update` -> refresh) is unit-tested against a `FakeArchive` as well as
+//! the real `walrus_fmt` mutate op (`Archive::add`, FR-W7). The real impl + the
+//! `WalrusSource::import` method are live (FR-W7 is merged on this branch).
 
 use anyhow::{Context, Result};
 
@@ -23,19 +22,13 @@ use crate::import::ImportResolution;
 /// The subset of the archive mutate surface the import path needs.
 ///
 /// A seam so the import ORCHESTRATION (resolve -> `add` vs `update` -> refresh)
-/// is unit-tested against a `FakeArchive` without the real `walrus_fmt` mutate
-/// op, which is a cross-stream dependency (FR-W7) that is not yet merged on this
-/// branch. The real impl for `walrus_fmt::Archive` lives behind the
-/// `import-mutate` cargo feature (see [`real_mutate`]).
+/// is unit-tested against a `FakeArchive` as well as the real `walrus_fmt`
+/// mutate op (FR-W7). The real impl for `walrus_fmt::Archive` lives in
+/// [`real_mutate`].
 ///
 /// This trait is CRATE-private and defined inside the one `walrus_fmt`-aware
 /// adapter module tree, so the FR-K1 AC2 boundary holds (no archive type leaks
 /// out).
-// Used by the `#[cfg(test)]` orchestration tests (a `FakeArchive` impl) and, in
-// a non-test build, only by the `import-mutate`-gated real impl + `import`
-// method. Without that feature the sole non-test user is compiled out, so allow
-// dead_code there rather than widen the API surface.
-#[cfg_attr(not(feature = "import-mutate"), allow(dead_code))]
 pub(crate) trait MutateArchive {
     /// Add `name` with `bytes`: create when `name` is untracked, else append a
     /// new save, mirroring `walrus_fmt::Archive::add`.
@@ -65,9 +58,6 @@ pub(crate) trait MutateArchive {
 /// # Errors
 /// Propagates any error from the underlying mutate call, with context naming
 /// the resolution.
-// See `MutateArchive`: exercised by the `#[cfg(test)]` tests and the
-// `import-mutate`-gated `import` method; allow dead_code when the feature is off.
-#[cfg_attr(not(feature = "import-mutate"), allow(dead_code))]
 pub(crate) fn apply_resolution(
     archive: &mut dyn MutateArchive,
     resolution: &ImportResolution,
@@ -88,7 +78,6 @@ pub(crate) fn apply_resolution(
 
 // === WalrusSource::import ===============================================
 
-#[cfg(feature = "import-mutate")]
 impl super::WalrusSource {
     /// Import `bytes` into the archive per `resolution`, then persist the result
     /// to `path` TRANSACTIONALLY and refresh the file list.
@@ -99,12 +88,6 @@ impl super::WalrusSource {
     /// import leaves any pre-existing archive at `path` byte-for-byte unchanged.
     /// On success the `file_ids` cache is rebuilt so a later `files()` lists the
     /// added/updated file.
-    ///
-    /// Requires the `import-mutate` cargo feature: the `walrus_fmt` mutate API
-    /// (`Archive::add`/`update`, FR-W7) is a cross-stream dependency not yet
-    /// merged on this branch. Without the feature this method is absent and the
-    /// import flow stops at the resolved [`ImportResolution`], which is still
-    /// fully headless-tested via [`apply_resolution`] + a `FakeArchive`.
     ///
     /// # Errors
     /// Returns an error if the mutate is rejected (e.g. non-UTF-8 bytes, or an
@@ -134,17 +117,12 @@ impl super::WalrusSource {
 
 // === Real MutateArchive impl (gated on FR-W7) ===========================
 
-/// The real [`MutateArchive`] for `walrus_fmt::Archive`, gated on the
-/// `import-mutate` feature because the underlying API (FR-W7) is not on this
-/// branch yet.
+/// The real [`MutateArchive`] for `walrus_fmt::Archive` (FR-W7 mutate API).
 ///
 /// Both `add` and `update` route through `Archive::add`: per the FR-W7 contract
 /// `add` on a TRACKED name records a new save exactly as the splice-based update
 /// path would, so a single call covers BOTH the create and the append cases
-/// without enabling the `diff`-gated `Archive::update(bytes)`. When FR-W7 merges
-/// and this feature is flipped on, this is the only code that needs to compile
-/// against the new API.
-#[cfg(feature = "import-mutate")]
+/// without enabling the `diff`-gated `Archive::update(bytes)`.
 mod real_mutate {
     use anyhow::Result;
     use walrus_fmt::Archive;
@@ -159,8 +137,18 @@ mod real_mutate {
         }
 
         fn update(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
-            // `add` on a tracked name appends one net save (FR-W7 contract), so
-            // the update path reuses it rather than the diff-gated update.
+            // The seam contract: `update` appends to an EXISTING tracked file
+            // and errors on an untracked name (unlike `add`, which would create
+            // it). `Archive::add` on a tracked name appends one net save (FR-W7
+            // contract), so the append reuses it rather than the diff-gated
+            // `Archive::update(bytes)`; but first reject an untracked name so a
+            // confirmed update never silently creates a file (and the on-disk
+            // archive stays byte-for-byte unchanged on that rejection).
+            if Archive::file(self, name).is_none() {
+                return Err(anyhow::anyhow!(
+                    "cannot update {name}: no such tracked file in the archive"
+                ));
+            }
             Archive::add(self, name, bytes, None, None).map_err(anyhow::Error::from)
         }
     }
@@ -176,11 +164,9 @@ mod tests {
     // === Import orchestration (FR-K5) ===================================
     //
     // These exercise the resolve -> add/update dispatch through the
-    // `MutateArchive` seam with a recording `FakeArchive`, so the import
-    // ORCHESTRATION runs GREEN now even while the real `walrus_fmt` mutate API
-    // (FR-W7) is unmerged. The real-archive, on-disk tests (AC1 + the
-    // transactional guarantee) live in `tests/import.rs` behind the
-    // `import-mutate` feature.
+    // `MutateArchive` seam with a recording `FakeArchive`. The real-archive,
+    // on-disk tests (AC1 + the transactional guarantee) against the FR-W7 mutate
+    // API live in `tests/import.rs`.
 
     /// A `MutateArchive` that records the calls made to it so a test can assert
     /// the import routed to the right op and never mutates a real archive.

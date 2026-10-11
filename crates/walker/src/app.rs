@@ -169,41 +169,28 @@ impl WalkerApp {
     /// the navigator list and the active selection so the new/updated file is
     /// shown. Sets a status string on success or failure.
     ///
-    /// The byte-mutation + transactional write live behind the `import-mutate`
-    /// feature (the `walrus_fmt` mutate API, FR-W7, is not yet merged on this
-    /// branch). Without the feature the import resolves and this records that the
-    /// mutate path is pending that cross-stream work, leaving the archive
-    /// untouched.
+    /// The byte-mutation + transactional write go through the `walrus_fmt`
+    /// mutate API (`Archive::add`, FR-W7), merged on this branch.
     fn apply_import(&mut self, outcome: crate::import::ImportOutcome) {
         if self.source.is_none() {
             return;
         }
         let target = outcome.resolution.target_name().to_string();
-        #[cfg(feature = "import-mutate")]
-        {
-            let source = self.source.as_mut().expect("source is Some");
-            let result = source.import(&outcome.resolution, &outcome.bytes, &outcome.path);
-            match result {
-                Ok(()) => {
-                    self.status = format!("Imported {target}");
-                    self.refresh_after_import(&target);
-                }
-                Err(e) => {
-                    self.status = format!("Import of {target} failed: {e}");
-                }
+        let source = self.source.as_mut().expect("source is Some");
+        let result = source.import(&outcome.resolution, &outcome.bytes, &outcome.path);
+        match result {
+            Ok(()) => {
+                self.status = format!("Imported {target}");
+                self.refresh_after_import(&target);
             }
-        }
-        #[cfg(not(feature = "import-mutate"))]
-        {
-            self.status = format!(
-                "Import of {target} resolved; byte-mutation pending the walrus-fmt mutate API (FR-W7)"
-            );
+            Err(e) => {
+                self.status = format!("Import of {target} failed: {e}");
+            }
         }
     }
 
     /// Re-select the imported/updated file so the navigator list and the viewer
     /// binding reflect it after a successful mutate (AC1 list refresh).
-    #[cfg(feature = "import-mutate")]
     fn refresh_after_import(&mut self, name: &str) {
         if let Some(source) = self.source.as_ref() {
             if let Some(file) = source.files().into_iter().find(|f| f.name() == name) {

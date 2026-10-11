@@ -12,11 +12,8 @@
 //! frame counts (mirrors `tests/navigator.rs`).
 //!
 //! The real-archive, on-disk mutation tests (AC1 "a tracked file is added" /
-//! "a version is appended" and the transactional guarantee) need the
-//! `walrus_fmt` mutate API (FR-W7), which is a cross-stream dependency not yet
-//! merged on this branch. They are gated behind the `import-mutate` cargo
-//! feature and `#[cfg_attr(..., ignore)]`-ed off until it lands -- NOT deleted,
-//! so they un-ignore the moment FR-W7 merges and the feature is flipped.
+//! "a version is appended" and the transactional guarantee) use the `walrus_fmt`
+//! mutate API (FR-W7), merged on this branch, so they run by default.
 
 use std::path::PathBuf;
 
@@ -181,12 +178,9 @@ fn cancelling_the_prompt_abandons_the_import() {
 
 // === AC1 + transactional guarantee: real archive on disk ================
 //
-// Gated on the walrus_fmt mutate API (FR-W7). Un-ignores when the
-// `import-mutate` feature is enabled (which is only valid once FR-W7 has merged
-// so `Archive::add` exists). See crates/walker/Cargo.toml and
-// .agents/tasks/walker-viewer/frk5-plan.md section 0.
+// Live against the walrus_fmt mutate API (FR-W7, `Archive::add`), merged on this
+// branch.
 
-#[cfg(feature = "import-mutate")]
 mod on_disk {
     use super::*;
     use walker::import::ImportResolution;

@@ -95,19 +95,19 @@ Tracked in detail in `.agents/tasks/requirements-walker.md`; the load-bearing
 cross-stream note:
 
 - FR-K1 source seam, FR-K2 WalrusSource adapter, FR-K4 two-pane navigator: done.
-- FR-K5 import = add/update (resolved automatically): MODEL + SEAM done,
-  byte-mutation GATED on FR-W7 merge. The FilePicker seam (real `rfd` + test
-  fake), the pure `ImportResolution` state machine (add / update-prompt / add-as),
-  the `WalrusSource` import orchestration via the `MutateArchive` seam (tested
-  with a `FakeArchive`), and the navigator/app wiring are all done and
-  headless-tested GREEN. The one piece still missing is the REAL byte-mutation:
-  `walrus_fmt`'s `Archive::add`/`update` (FR-W7) is NOT on this branch, so the
-  real `MutateArchive` impl and `WalrusSource::import` live behind the
-  off-by-default `import-mutate` walker feature, and the on-disk AC1 +
-  transactional-guarantee tests (`tests/import.rs::on_disk`) are compiled only
-  under that feature. They un-ignore the moment FR-W7 merges and the feature is
-  flipped on. The write path is deliberately CONCRETE (off the read-only
-  `HistorySource` trait).
+- FR-K5 import = add/update (resolved automatically): DONE and LIVE. The
+  FilePicker seam (real `rfd` + test fake), the pure `ImportResolution` state
+  machine (add / update-prompt / add-as), the `WalrusSource` import
+  orchestration via the `MutateArchive` seam, and the navigator/app wiring are
+  all done and headless-tested GREEN. Byte-mutation is no longer gated: FR-W7's
+  `walrus_fmt::Archive::add` is merged on this branch, so the real
+  `MutateArchive` impl and `WalrusSource::import` are unconditional (the
+  `import-mutate` feature was removed), and the on-disk AC1 +
+  transactional-guarantee tests (`tests/import.rs::on_disk`) compile and PASS by
+  default. Both create and append route through `Archive::add` (a tracked-name
+  `add` records a save), so the `diff`-gated `Archive::update(bytes)` is not
+  needed. The only MANUAL carve-out remains the real `rfd` pick. The write path
+  is deliberately CONCRETE (off the read-only `HistorySource` trait).
 
 ## Previously "done" -- now obsolete or needs re-work (OLD single-file format)
 

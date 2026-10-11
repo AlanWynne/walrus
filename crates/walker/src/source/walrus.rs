@@ -351,7 +351,7 @@ mod tests {
     // The import ORCHESTRATION tests (the `MutateArchive` seam + a recording
     // `FakeArchive`) moved with the orchestration code into the `walrus_import`
     // child module. The on-disk real-archive tests (AC1 + the transactional
-    // guarantee) live in `tests/import.rs` behind the `import-mutate` feature.
+    // guarantee) live in `tests/import.rs`.
 
     /// Build the compressed container bytes for a single forward tracked file,
     /// so the unit tests can open a real `WalrusSource` without the integration
