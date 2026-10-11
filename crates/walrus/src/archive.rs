@@ -81,6 +81,19 @@ impl std::fmt::Debug for ArchiveFile {
 }
 
 impl Archive {
+    /// Seed a fresh, empty archive from a prepared manifest (zero tracked
+    /// files). Use this when building an archive programmatically and you need
+    /// to set archive-level manifest fields -- e.g. an example generator setting
+    /// `created`/`generator` -- BEFORE adding files via [`Archive::add`]. The
+    /// manifest's own `files` array is ignored here; the archive starts with no
+    /// parsed file contents and files are added through the mutate API.
+    pub fn new(manifest: Manifest) -> Archive {
+        Archive {
+            manifest,
+            files: Vec::new(),
+        }
+    }
+
     /// Read an archive from the whole compressed container bytes: sniff the
     /// outer codec, decompress, untar, parse `manifest.json`, validate it, and
     /// collect each tracked file's base and parsed `.wchg`.
@@ -820,6 +833,28 @@ mod reconstruct_tests {
             .reconstruct(&FileId::from("absent"), Version::Current)
             .expect_err("absent file id must error");
         assert!(matches!(err, WalrusError::UnknownFile { .. }));
+    }
+
+    #[test]
+    fn new_seeds_an_empty_archive_whose_manifest_fields_round_trip() {
+        // Archive::new seeds a files-free archive from a prepared manifest; its
+        // archive-level `created`/`generator` survive a to_bytes/read round-trip.
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.created = Some("2026-10-08T20:30:00Z".to_string());
+        manifest.generator = Some("walrus-fmt test".to_string());
+        let a = Archive::new(manifest);
+        assert_eq!(a.files().count(), 0, "a fresh archive tracks no files");
+
+        let bytes = a.to_bytes().expect("serialise empty archive");
+        let reopened = Archive::read(&bytes).expect("read empty archive");
+        assert_eq!(
+            reopened.manifest().created.as_deref(),
+            Some("2026-10-08T20:30:00Z")
+        );
+        assert_eq!(
+            reopened.manifest().generator.as_deref(),
+            Some("walrus-fmt test")
+        );
     }
 }
 
