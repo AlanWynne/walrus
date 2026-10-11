@@ -77,7 +77,12 @@ logic (reconstruct, version addressing, re-base, diff, player). Scoped
    the forward-then-backward byte-identical integration test.
 8. CLI: re-scope `walx` to extract-only (extract + cat, multi-file + mask, RC
    table); create the new `walrus` binary (query/add/update/remove/condense/
-   convert) with POSIX/GNU conventions.
+   convert) with POSIX/GNU conventions. `add`/`update` take `-R`/`--recurse`
+   (CLI-DESIGN 5.4b, requirements FR-W11 AC7): a CLI-layer walk that expands each
+   directory argument into the file batch, storing each file under its path
+   relative to the recursion root (root name included) as the archive `name`.
+   This reuses the existing `Archive::add`/`update` mutate API (step 6) -- no new
+   library primitive -- so a recursed add + `walx extract` round-trips the tree.
 9. WALKER full frontend: two-pane navigator, per-file player binding, import=
    add/update, remove/condense/set-generations, bloat indicator, and the `.wchg`
    history viewer (Markdown report export). Headless `egui_kittest` tests.

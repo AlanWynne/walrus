@@ -18,10 +18,24 @@
 mod archive;
 mod atomic;
 mod container;
+#[cfg(feature = "diff")]
+mod diff;
+#[cfg(feature = "i18n")]
+mod encoding;
 mod error;
+mod invert;
 mod manifest;
+mod mutate;
+mod mutate_add;
+mod mutate_convert;
+#[cfg(feature = "i18n")]
+mod mutate_i18n;
+mod mutate_remove;
+mod mutate_stamp;
+mod rebase;
 mod reconstruct;
 mod record;
+mod standalone;
 mod timestamp;
 mod version;
 mod wchg;
@@ -30,6 +44,8 @@ mod write;
 pub mod export;
 
 pub use archive::{Archive, FileId};
+#[cfg(feature = "diff")]
+pub use diff::{diff, DiffResult, Granularity};
 pub use error::{Result, WalrusError};
 pub use manifest::{
     Checkpoint, FileAttributes, Manifest, RebaseInfo, TrackedFile, Variant, Versions,

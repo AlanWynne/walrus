@@ -51,6 +51,10 @@ pub enum Version {
 /// records (the far index). Resolution rules per selector are documented on the
 /// [`Version`] variants. The result is always in `[0, count]`.
 ///
+/// This delegates to [`resolve_standalone`] by passing the file's own
+/// checkpoints, so there is ONE addressing implementation shared by the
+/// manifest-backed [`crate::Archive::reconstruct`] and the standalone replay.
+///
 /// # Errors
 /// Returns [`WalrusError::VersionRange`] for an out-of-range [`Version::Index`]
 /// and [`WalrusError::UnknownCheckpoint`] for an unknown [`Version::Label`].
@@ -58,6 +62,26 @@ pub(crate) fn resolve_file(
     file: &TrackedFile,
     records: &[ChangeRecord],
     count: usize,
+    version: Version,
+) -> Result<usize> {
+    resolve_standalone(count, &file.checkpoints, records, version)
+}
+
+/// Resolve a selector against a bare `(count, checkpoints, records)` triple,
+/// without a parent manifest. This holds the whole addressing policy; the
+/// manifest-backed [`resolve_file`] delegates here with `&file.checkpoints`,
+/// while the standalone `.wchg` replay passes an EMPTY checkpoints slice (so
+/// [`Version::Label`] resolves to [`WalrusError::UnknownCheckpoint`] -- there is
+/// no checkpoint source without a manifest). Every other selector needs only
+/// `count` and the records' own timestamps. The result is always in `[0, count]`.
+///
+/// # Errors
+/// Returns [`WalrusError::VersionRange`] for an out-of-range [`Version::Index`]
+/// and [`WalrusError::UnknownCheckpoint`] for an unknown [`Version::Label`].
+pub(crate) fn resolve_standalone(
+    count: usize,
+    checkpoints: &[crate::Checkpoint],
+    records: &[ChangeRecord],
     version: Version,
 ) -> Result<usize> {
     match version {
@@ -75,8 +99,7 @@ pub(crate) fn resolve_file(
         // Relative to current (index 0): positive moves older (higher index),
         // negative clamps to 0; the sum is clamped into [0, count] at both ends.
         Version::Relative(n) => Ok(clamp_i64(n, count)),
-        Version::Label(label) => file
-            .checkpoints
+        Version::Label(label) => checkpoints
             .iter()
             .find(|c| c.label == label)
             .map(|c| c.index.min(count))

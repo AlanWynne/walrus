@@ -48,6 +48,25 @@ pub(crate) fn reconstruct_directional(
     apply_first_splices(base, log, splices_to_apply)
 }
 
+/// Apply a single splice record to `doc` in place, reusing the one splice-apply
+/// primitive (INV-4). A checkpoint record is a no-op (it carries no mutation).
+///
+/// # Errors
+/// Returns [`WalrusError::SpliceOutOfBounds`] if the record's range falls
+/// outside `doc`.
+// Consumed by the re-base fold (`crate::rebase::fold_oldest`), reached from the
+// live Archive mutate path (`condense` / `enforce_generations`) in `mutate.rs`.
+pub(crate) fn apply_record(doc: &mut Vec<u8>, record: &ChangeRecord) -> Result<()> {
+    match &record.op {
+        Op::Splice {
+            at,
+            delete_len,
+            insert,
+        } => apply_splice(doc, *at, *delete_len, insert.as_bytes()),
+        Op::Checkpoint { .. } => Ok(()),
+    }
+}
+
 /// Apply the first `n` SPLICE records of `log` to `base` in order, skipping
 /// checkpoint records (which do not advance the applied counter).
 fn apply_first_splices(base: &[u8], log: &[ChangeRecord], n: usize) -> Result<Vec<u8>> {

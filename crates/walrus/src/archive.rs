@@ -47,12 +47,14 @@ impl From<String> for FileId {
 // === Archive ============================================================
 
 /// One tracked file's parsed container contents, matched to its manifest entry
-/// by `id`. Private: callers reach a file's data through [`Archive`] accessors.
-struct ArchiveFile {
-    id: String,
-    base: Vec<u8>,
-    header: WchgHeader,
-    records: Vec<ChangeRecord>,
+/// by `id`. Crate-visible so the sibling `mutate` module can re-base a file's
+/// base/records in place; external callers reach a file's data through
+/// [`Archive`] accessors only.
+pub(crate) struct ArchiveFile {
+    pub(crate) id: String,
+    pub(crate) base: Vec<u8>,
+    pub(crate) header: WchgHeader,
+    pub(crate) records: Vec<ChangeRecord>,
 }
 
 /// A read-only, in-memory Walrus archive: the manifest plus every tracked
@@ -79,6 +81,19 @@ impl std::fmt::Debug for ArchiveFile {
 }
 
 impl Archive {
+    /// Seed a fresh, empty archive from a prepared manifest (zero tracked
+    /// files). Use this when building an archive programmatically and you need
+    /// to set archive-level manifest fields -- e.g. an example generator setting
+    /// `created`/`generator` -- BEFORE adding files via [`Archive::add`]. The
+    /// manifest's own `files` array is ignored here; the archive starts with no
+    /// parsed file contents and files are added through the mutate API.
+    pub fn new(manifest: Manifest) -> Archive {
+        Archive {
+            manifest,
+            files: Vec::new(),
+        }
+    }
+
     /// Read an archive from the whole compressed container bytes: sniff the
     /// outer codec, decompress, untar, parse `manifest.json`, validate it, and
     /// collect each tracked file's base and parsed `.wchg`.
@@ -259,6 +274,42 @@ impl Archive {
     fn lookup(&self, sel: &str) -> Option<&ArchiveFile> {
         let tracked = self.file(sel)?;
         self.files.iter().find(|f| f.id == tracked.id)
+    }
+
+    /// Build an [`Archive`] from a manifest and parsed per-file entries, for the
+    /// `convert` mutate path (which returns a NEW archive). Not part of the
+    /// public API. The caller guarantees the manifest and files share ids.
+    pub(crate) fn from_directories(manifest: Manifest, files: Vec<ArchiveFile>) -> Archive {
+        Archive { manifest, files }
+    }
+
+    /// Read-only access to the parsed per-file entries, for the sibling
+    /// `mutate_convert` module. Not part of the public API.
+    pub(crate) fn files_ref(&self) -> &[ArchiveFile] {
+        &self.files
+    }
+
+    /// Mutable access to the manifest, for the sibling `mutate` module. Not
+    /// part of the public API: re-base/condense update the per-file manifest
+    /// entry (versions, checkpoints, rebase audit) through this seam.
+    pub(crate) fn manifest_mut(&mut self) -> &mut Manifest {
+        &mut self.manifest
+    }
+
+    /// Mutable access to the parsed per-file contents, for the sibling `mutate`
+    /// module. Not part of the public API: re-base folds a file's base/records
+    /// and header `count` in place through this seam.
+    pub(crate) fn files_mut(&mut self) -> &mut [ArchiveFile] {
+        &mut self.files
+    }
+
+    /// Growable mutable access to BOTH directories at once, for the create
+    /// (`add`) and destroy (`remove`) mutate paths. The slice `files_mut`
+    /// cannot push or remove a file; handing the manifest and the file vec out
+    /// together lets a caller mutate both in lockstep so [`Archive::to_bytes`]
+    /// never sees a half-added or half-removed file. Not part of the public API.
+    pub(crate) fn directories_mut(&mut self) -> (&mut Manifest, &mut Vec<ArchiveFile>) {
+        (&mut self.manifest, &mut self.files)
     }
 
     /// Build an [`Archive`] directly from a manifest and per-file parts, for
@@ -520,42 +571,14 @@ mod reconstruct_tests {
     // --- AC2 (INV-3): byte-identical across directions over the WHOLE range ---
 
     /// Derive the equivalent reverse file from a forward file by inverting each
-    /// splice against the version it applies to. For a forward splice
-    /// `{at, delete_len, insert}` applied to forward-version `Vp` producing
-    /// `Vq`, the inverse splice applied to `Vq` is
-    /// `{at, delete_len: insert.len(), insert: <the bytes deleted from Vp>}`.
-    /// We walk the forward history from the original forward, capturing the
-    /// deleted bytes, then reverse the collected inverses so they apply
-    /// current -> original (the reverse log order).
+    /// splice against the version it applies to, via the single production
+    /// inversion helper ([`crate::invert::invert_forward_splices`]) so there is
+    /// ONE inversion implementation, test and production alike.
     fn invert_forward_to_reverse(
         original: &[u8],
         forward: &[ChangeRecord],
     ) -> (Vec<u8>, Vec<ChangeRecord>) {
-        let mut version = original.to_vec();
-        let mut inverses = Vec::new();
-        for rec in forward {
-            if let crate::record::Op::Splice {
-                at,
-                delete_len,
-                insert,
-            } = &rec.op
-            {
-                // Bytes about to be deleted from the current version `Vp`.
-                let deleted = version[*at..*at + *delete_len].to_vec();
-                let deleted_str = String::from_utf8(deleted).expect("utf-8 deleted bytes");
-                // The inverse of this forward step, applied to `Vq`.
-                inverses.push(ChangeRecord::splice(*at, insert.len(), deleted_str));
-                // Advance `version` by applying the forward splice to reach `Vq`.
-                let mut next = version.clone();
-                next.splice(*at..*at + *delete_len, insert.bytes());
-                version = next;
-            }
-        }
-        // `version` is now the current (fully forward-applied) bytes = reverse
-        // base. The reverse log applies current -> original, i.e. the inverses
-        // in REVERSE order (undo the last forward step first).
-        inverses.reverse();
-        (version, inverses)
+        crate::invert::invert_forward_splices(original, forward).expect("invert forward splices")
     }
 
     #[test]
@@ -810,6 +833,28 @@ mod reconstruct_tests {
             .reconstruct(&FileId::from("absent"), Version::Current)
             .expect_err("absent file id must error");
         assert!(matches!(err, WalrusError::UnknownFile { .. }));
+    }
+
+    #[test]
+    fn new_seeds_an_empty_archive_whose_manifest_fields_round_trip() {
+        // Archive::new seeds a files-free archive from a prepared manifest; its
+        // archive-level `created`/`generator` survive a to_bytes/read round-trip.
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.created = Some("2026-10-08T20:30:00Z".to_string());
+        manifest.generator = Some("walrus-fmt test".to_string());
+        let a = Archive::new(manifest);
+        assert_eq!(a.files().count(), 0, "a fresh archive tracks no files");
+
+        let bytes = a.to_bytes().expect("serialise empty archive");
+        let reopened = Archive::read(&bytes).expect("read empty archive");
+        assert_eq!(
+            reopened.manifest().created.as_deref(),
+            Some("2026-10-08T20:30:00Z")
+        );
+        assert_eq!(
+            reopened.manifest().generator.as_deref(),
+            Some("walrus-fmt test")
+        );
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "walx"
-description = "CLI to inspect, extract versions from, and convert .wal / .wbl files."
+description = "Extract-only CLI over the walrus-fmt multi-file Archive API (extract + cat)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,5 +16,9 @@ name = "walx"
 path = "src/main.rs"
 
 [dependencies]
-walrus-fmt = { workspace = true, features = ["export-html", "export-md", "export-json", "export-csv"] }
+walrus-fmt = { workspace = true }
+wal-cli-common = { path = "../wal-cli-common" }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

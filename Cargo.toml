@@ -2,7 +2,9 @@
 resolver = "2"
 members = [
     "crates/walrus",
+    "crates/wal-cli-common",
     "crates/walx",
+    "crates/walrus-cli",
     "crates/walker",
 ]
 

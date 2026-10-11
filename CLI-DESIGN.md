@@ -46,6 +46,47 @@ its own base and its own change log. This is the primary format change driving
 this discussion. It needs to be reflected in `FORMAT.md` section 2 (tar members
 move from a fixed single-file set to a per-file set).
 
+### 1.4 Compression: zstd-only in 0.1, no CLI knobs -- DECIDED
+
+The "compressed" in "compressed tar" is the archive's OUTER codec layer
+(FORMAT.md section 2). The decisions for 0.1:
+
+- CODEC IS `zstd`, FIXED. Every 0.1 archive the CLI writes is zstd-compressed.
+  gzip is RESERVED in the format (its magic is recognised so a gzip container is
+  identified, not mis-read) but no 0.1 writer emits it and the reference reader
+  returns a clear "not supported by this build" error rather than decoding it.
+- LEVEL IS A WRITER-INTERNAL CONSTANT, not a format property. The reference
+  writer uses a fixed zstd level (currently 19 -- small artefact, still fast for
+  the small text documents Walrus stores). The level is NOT recorded in the
+  archive and a reader never needs it, so changing it later is not a format
+  change.
+- NO COMPRESSION FLAGS ON THE CLI in 0.1. There is deliberately no `--codec`,
+  `--level`, `--compression`, or `--store` on any command. This matches the
+  lean-CLI dependency posture (the same reasoning that keeps `--encoding` and
+  export out of the CLI, section 4): the user never names a codec; the writer
+  picks zstd and the reader sniffs whatever it is given (FORMAT.md section 2,
+  codec-from-magic-bytes, INV-5).
+
+WHY THIS IS SAFE TO REVISIT LATER. Adding a better/alternative codec (activating
+gzip, or adding xz/lz4/brotli) is an ADDITIVE, backward-compatible change and
+needs NO decision now:
+
+- The codec wraps the whole inner tar; manifest, bases, and `.wchg` logs are
+  byte-identical regardless of codec, so reconstruction and the byte-identical
+  guarantee (FORMAT.md section 5) are untouched by a codec choice.
+- Detection is by magic bytes, never the extension, so a new codec adds a magic
+  constant plus an encode/decode arm -- no manifest field, no extension change,
+  no new library primitive.
+- Old archives keep reading unchanged; only an OLD reader facing a NEW-codec
+  archive is affected, and it fails CLOSED with the unrecognised-codec error
+  (never a silent mis-read).
+
+So the shape to expose compression later -- a `--codec`/`--level` flag on the
+mutating commands, driving the same writer -- can be added in a later CLI version
+without a format break. It is spec-first per INV-1: register any new codec id +
+magic in FORMAT.md section 2 before shipping a writer for it. Nothing in the 0.1
+layout needs to change now to keep that door open; it is already open.
+
 ---
 
 ## 2. Version indexing
@@ -248,12 +289,13 @@ grouping, and avoids an operation hiding as a flag after positional arguments.
 
 ```
 walrus query    <archive> [file-mask] [-l]
-walrus extract  <archive> [file-mask] [--index <n>] [-o <dir>] [--force]
+walrus extract  <archive> [file-mask] [--index <n>] [-o <dir>] [--force] [--sanitize]
 walrus cat      <archive> <file>       [--index <n>]
-walrus add      <archive> <files...>
-walrus update   <archive> <files...>
+walrus add      <archive> <files...>  [--generations <n>] [--wal | --wbl | --direction <forward|reverse>] [-R]
+walrus update   <archive> <files...>  [--generations <n>] [-R]
 walrus remove   <archive> <file-mask> [--force]
 walrus condense <archive> <file-mask> [--keep <n>]
+walrus convert  <archive> [file-mask] --to <wal|wbl> [-o <name>]
 ```
 
 The flag spellings (`-x`/`--extract`, `-q`/`--query`, `-a`/`--add`, `-u`/
@@ -317,6 +359,81 @@ surface -- it provides `extract` (restore to disk, section 5.2.1) and `cat`
 (bytes to stdout, section 5.2.2) and nothing that mutates an archive. The full
 management set (query/add/update/remove/condense/convert) is `walrus`-only.
 
+#### `wal` as an OPT-IN, collision-aware alias -- DECIDED
+
+Rejecting `wal` as the CANONICAL binary name (above) does NOT forbid `wal` as an
+optional alias. The two are different commitments: the canonical name is what the
+installer ALWAYS puts on `$PATH` (and must never silently shadow pywal's `wal`),
+whereas an alias is something the user deliberately opts into when their `$PATH`
+is clear. So `walrus` remains the one guaranteed binary, and `wal` is offered as
+a convenience the user turns on at their own discretion -- "usable as long as the
+wallpaper tool (pywal) is not in the way", exactly the intended framing.
+
+LOAD-BEARING RULE: nothing in a default install may create a `wal` entry on
+`$PATH`. No second `[[bin]] name = "wal"`, no post-install script that drops a
+`wal` unconditionally. Doing so would reintroduce the precise silent-shadow
+problem that got `wal` rejected -- it would merely move the collision from
+"always" to "on install", which is still default-on. The alias is ALWAYS opt-in
+and ALWAYS collision-checked before creation. This mirrors how `ripgrep` ships
+`rg`, and how Debian ships `batcat`/`fdfind` and documents a user-added short
+alias rather than forcing one.
+
+Two mechanisms, both opt-in:
+
+1. DOCUMENTED SHELL ALIAS (zero-risk, always available). The README / install
+   notes tell the user how to add the alias themselves:
+   - POSIX shells: `alias wal=walrus` in the shell rc.
+   - PowerShell: `Set-Alias wal walrus` (or a thin function) in the profile.
+   A user-defined shell alias is resolved by the shell before `$PATH`, is trivial
+   to remove, and can never clobber another binary on disk. This alone satisfies
+   the request for most users and needs no code.
+
+2. `walrus alias` HELPER SUBCOMMAND (opt-in, collision-aware). For users who want
+   a real `wal` on `$PATH` (so it works from scripts and other programs, not just
+   an interactive shell), `walrus` provides a guarded installer:
+
+   ```
+   walrus alias install [--name <alias>] [--dir <dir>] [--force]
+   walrus alias remove  [--name <alias>] [--dir <dir>]
+   walrus alias status  [--name <alias>]
+   ```
+
+   - DEFAULT ALIAS NAME is `wal`; `--name` allows a different short name.
+   - `install` resolves a target directory (`--dir`, else the first user-writable
+     `$PATH` entry, e.g. `~/.local/bin` on POSIX or the user bin dir on Windows)
+     and creates a shim pointing at the real `walrus` binary: a SYMLINK on POSIX,
+     and on Windows a small shim (a `.cmd`/`.exe` launcher; a symlink only if the
+     environment permits it without elevation).
+   - COLLISION CHECK IS MANDATORY. Before creating anything, `install` searches
+     `$PATH` for an existing `wal`. If one is found that is NOT our own shim (e.g.
+     pywal), it REFUSES: prints what owns `wal` (the resolved path) and exits
+     RC 2, creating nothing -- UNLESS `--force` is given, in which case it still
+     refuses to overwrite a file it did not create and instead instructs the user
+     to pick `--name` or `--dir` (we never delete or shadow a foreign binary).
+     An existing `wal` that IS our own prior shim is simply re-pointed (idempotent).
+   - `remove` deletes ONLY a shim we created (verified by target), never a foreign
+     `wal`; a no-op with a note if none of ours is present.
+   - `status` reports whether a `wal` is on `$PATH`, its resolved target, and
+     whether it is our shim, pywal, or something else -- so the user can decide
+     before installing.
+   - RETURN CODES: refuse-on-foreign-collision -> RC 2 (usage/safety, matching the
+     refuse-by-default convention elsewhere); success -> 0; `remove` with nothing
+     of ours present -> 0 with a stderr note.
+
+   The helper does NOT modify shell rc files or the registry; it only manages a
+   single shim file in a bin directory, so `remove` fully reverses `install`.
+
+RATIONALE: this gives the short, ergonomic `wal` to users who want it, on both
+the interactive-shell path (mechanism 1) and the real-`$PATH` path (mechanism 2),
+without the canonical install ever endangering a pywal user. The canonical-name
+DECIDED above is unchanged; this only adds an opt-in layer on top of it.
+
+OPEN (not blocking 0.1): distro-level integration via `update-alternatives`
+(Linux) so a packager can register `wal` as a managed alternative the user
+selects -- packaging-maintainer territory, deferred past the 0.1 CLI. The
+`walrus alias` helper above is the cross-platform, no-package-manager answer in
+the meantime.
+
 ---
 
 ## 5. Commands
@@ -349,8 +466,10 @@ walrus <archive> -q
   size.
 
 DECIDED: "index size" = the COUNT of recorded versions (the highest valid index)
-for the file. The BYTE size of the inner `.wchg` log is a separate column, shown
-only in the long listing (`-l`).
+for the file. The long listing (`-l`) additionally shows a "log bytes" column
+(the byte size of the inner `.wchg` log) alongside the file attributes -- this is
+the "attributes + log bytes" the requirements call for (FR-W11 AC1), and it is
+the same `log_bytes` figure the Walker bloat indicator uses (section 6b.3).
 
 ### 5.2 Extract (restore to disk) and Cat (write to stdout)
 
@@ -370,11 +489,34 @@ walrus <archive> [file-mask] -x                              # alias
   their stored names, recreating any relative path from the manifest and
   restoring recorded attributes.
 - `file-mask` optional: omitted -> ALL tracked files; wildcards select a subset.
-- `--index <n>` optional, applies to every selected file:
-  - omitted -> index 0 (current version).
-  - a valid number -> that version.
-  - greater than a file's last recorded index -> the ORIGINAL version is written
-    for that file, with a WARNING, and the command exits RC 4.
+- VERSION SELECTOR (optional, applies to EVERY selected file, resolved PER FILE
+  against that file's own `[0, count]` range -- see FORMAT.md section 5). The
+  selectors below mirror the library `Version` enum (FR-W3) so the CLI is as
+  expressive as the engine beneath it. At most one selector may be given
+  (supplying two is RC 2):
+  - omitted (or `--version current`) -> index 0, the CURRENT version. Default.
+  - `--version original` -> each file's OLDEST version (its own `count`). This is
+    how you extract the oldest version of EVERY file at once; because it resolves
+    per file it is correct for a mixed-history archive, and it is a clean success
+    (RC 0, no warning) -- unlike a numeric index past the end.
+  - `--index <n>` -> that numeric index for every file. Greater than a file's
+    last recorded index -> the ORIGINAL is written for THAT file with a WARNING,
+    and the command exits RC 4 (the clamp-and-warn safety fallback; it applies
+    only to an out-of-range NUMERIC index, never to `original`/`current`/`--at`).
+  - `--version <+/-n>` -> RELATIVE to current (e.g. `-1` = one older than
+    current), clamped into the file's range.
+  - `--at <T>` -> SNAPSHOT AT A TIMESTAMP. For each file, the version whose change
+    record is the newest at-or-before `T`; a `T` before a file's earliest record
+    resolves to that file's current version (index 0). `T` is a UTC ISO-8601
+    instant in the fixed shape `YYYY-MM-DDThh:mm:ssZ` (the trailing `Z` is
+    required; see the UTC rule below). This reconstructs the whole archive as it
+    stood at an instant -- a point-in-time snapshot across all files.
+  - `--label <name>` -- resolve by a file's checkpoint label (FORMAT.md 5.2).
+    OPEN (deferred past 0.1): checkpoint labels are a thinner, less-exercised
+    path; `--label` ships once checkpoint authoring is exposed. `--at`,
+    `original`, `current`, numeric, and relative all ship in 0.1.
+  `--index <n>` is retained as the explicit numeric spelling; `--version` accepts
+  `current` / `original` / a signed relative integer; `--at` is its own flag.
 - `-o` / `--output <dir>`: destination directory. DEFAULT is the current working
   directory. Stored relative paths are recreated beneath it.
 - DECIDED (overwrite safety): if a target path ALREADY EXISTS, extract REFUSES
@@ -384,7 +526,7 @@ walrus <archive> [file-mask] -x                              # alias
 #### 5.2.2 `cat` -- write ONE file's bytes to stdout
 
 ```
-walrus cat <archive> <file> [--index <n>]
+walrus cat <archive> <file> [--index <n> | --version <current|original|+/-n> | --at <T>]
 ```
 
 - The `cat` (Linux) / `type` (Windows) analogue: reconstructs ONE tracked file at
@@ -392,8 +534,11 @@ walrus cat <archive> <file> [--index <n>]
   redirects it wherever they want. This is what the old `extract` did.
 - Exactly ONE tracked file must be selected (not a multi-match mask); selecting
   zero or more than one is a usage error (RC 2).
-- `--index <n>` as in extract (omitted -> current; beyond-last -> original + warn
-  + RC 4).
+- VERSION SELECTOR: the SAME selector set as extract (section 5.2.1) --
+  `--index <n>`, `--version current|original|<+/-n>`, and `--at <T>` (UTC
+  snapshot), resolved against the single selected file's range; omitted ->
+  current; a numeric index beyond-last -> original + warning + RC 4; `--label`
+  deferred as in extract. At most one selector (two is RC 2).
 - No `-o`, no `--force`: `cat` never touches disk. Redirection is the user's job:
   `walrus cat a.wal notes.txt > just-this.txt` or `walrus cat a.wal notes.txt |
   grep TODO`.
@@ -409,11 +554,14 @@ mere alias of extract.
 ### 5.3 Add
 
 ```
-walrus add <archive> <files-to-add...> [--generations <n>]   # canonical
-walrus <archive> <files-to-add...> -a                          # alias
+walrus add <archive> <files-to-add...> [--generations <n>] [-R | --recurse]   # canonical
+walrus add <archive> - --name <stored-name> [--generations <n>]                # from stdin (5.4e)
+walrus <archive> <files-to-add...> -a                                          # alias
 ```
 
 - `files-to-add` may be a list of names/paths, including wildcards.
+- A single `-` operand reads the content from STDIN instead of a file and
+  REQUIRES `--name <stored-name>` to supply the archive name (section 5.4e).
 - For each file: it becomes the new current version; a diff against the archive's
   existing current version is computed and the change log updated.
 - Works whether or not the file already exists in the archive. If it does not
@@ -424,24 +572,102 @@ walrus <archive> <files-to-add...> -a                          # alias
   defaults to 0 (unlimited).
 - If adding exceeds a file's generation cap, the oldest version(s) are
   auto-dropped (re-base) per section 2.1.
+- `-R` / `--recurse` descends into any directory argument and adds every file
+  found beneath it, storing each under its path RELATIVE to the recursion root
+  as the archive name (section 5.4b). Without `-R`, a directory argument is a
+  usage error (RC 2).
+
+#### Direction flag `--wal` / `--wbl` / `--direction` -- DECIDED
+
+`add` accepts `--wal` / `--wbl` (equivalently `--direction <forward|reverse>`,
+where `--wal` == `--direction forward` and `--wbl` == `--direction reverse`) to
+choose a file's replay direction. Per-file direction is IMMUTABLE once a file is
+tracked (only `convert`, section 5.7, flips an existing file), so the flag only
+ever applies at CREATE time:
+
+- CREATE-ONLY OVERRIDE: the flag sets the direction for a file being CREATED by
+  this `add`. For a file ALREADY tracked in the archive, the flag is IGNORED and
+  the existing direction kept (changing it would be a `convert`, not an `add`).
+- BRAND-NEW ARCHIVE (no manifest yet) SEED ORDER for the file's direction:
+  1. the explicit flag (`--wal`/`--wbl`/`--direction`), else
+  2. the archive filename extension (`.wal` -> forward, `.wbl` -> reverse), else
+  3. the default `wal` / forward for a bare archive name with no extension.
+- EXISTING ARCHIVE: the manifest `variant` drives the default direction for a
+  newly added file; the archive filename EXTENSION is NOT consulted. This keeps
+  behaviour identical on extension-blind Unix systems, where the manifest -- not
+  the name -- is authoritative.
+
+This is the CLI realisation of FORMAT.md's rule that the archive variant seeds
+the default direction for newly added files while each file's own `.wchg`
+`direction` remains authoritative for reconstruction (section 6a).
+
+OPEN (deferred past 0.1): a source-encoding flag. FR-W8 / section 2.3 decide the
+i18n TRANSCODE behaviour (accept a declared non-UTF-8 source, transcode to UTF-8
+on `add` via `encoding_rs`, record the original encoding per file, optionally
+transcode back on `extract`), but that is a `walrus-fmt` LIBRARY capability
+behind the optional `i18n` cargo feature. The 0.1 CLI is deliberately UTF-8-only
+and does NOT expose an `--encoding <enc>` flag on `add` (nor `--encoding` /
+`--keep-original` on `extract`): adding it would pull `encoding_rs` into the CLI
+binary, which cuts against the lean-CLI dependency boundary (the same reason
+export stays Walker-only, section 4). Non-UTF-8 handling is available to Walker
+via the library today; the CLI flags are additive and can be turned on in a later
+version without a format change. (A non-UTF-8 file given to the 0.1 CLI is
+rejected as binary per section 2.2.2 / the `BinaryInput` error.)
 
 ### 5.4 Update
 
 ```
-walrus update <archive> <files-to-update...> [--generations <n>]   # canonical
-walrus <archive> <files-to-update...> -u                            # alias
+walrus update <archive> <files-to-update...> [--generations <n>] [-R | --recurse]   # canonical
+walrus update <archive> - --name <stored-name> [--generations <n>]                   # from stdin (5.4e)
+walrus <archive> <files-to-update...> -u                                             # alias
 ```
 
+- A single `-` operand reads the content from STDIN instead of a file and
+  REQUIRES `--name <stored-name>` to name the target (section 5.4e); the named
+  file must already be tracked or the command fails RC 8, as for any `update`.
 - If the file EXISTS in the archive: it becomes the new current version; a diff
   against the current version is computed and the change log updated.
-- If the file DOES NOT exist: report that it must be added instead; fail RC 8.
+- If the file DOES NOT exist: report that it must be added instead; fail RC 8
+  (the library's `NotTracked` error, section 6).
 - `--generations <n>` sets the file's generation cap (see section 2.1); omitting
   it leaves the cap unchanged.
 - If updating exceeds a file's generation cap, the oldest version(s) are
   auto-dropped (re-base) per section 2.1.
+- `-R` / `--recurse` descends into any directory argument and updates every file
+  found beneath it, matching each by its path RELATIVE to the recursion root
+  against the archive name (section 5.4b). Because update refuses files absent
+  from the archive, a recursed file not already tracked fails RC 8 per the batch
+  transaction (section 5.4a); use `add` to introduce new files. Without `-R`, a
+  directory argument is a usage error (RC 2).
 
 Difference from Add: Add creates a missing file; Update refuses and fails. The
 diff/update behavior is otherwise identical.
+
+#### No-change save (diff finds nothing) -- DECIDED
+
+When `add` or `update` is given content byte-identical to the file's CURRENT
+version, the diff produces no net splice. This is a SUCCESS no-op, not an error:
+the file is left exactly as it was, NO new version is recorded, and the version
+index does NOT advance (it counts real saves, consistent with the one-net-splice-
+per-save rule, FORMAT.md 4.4; the library already returns success and stores
+nothing in this case). This mirrors the familiar "nothing to commit" of a VCS.
+
+- RETURN CODE: 0 (success). A no-change save is the archive already being in the
+  desired state, not a failure.
+- REPORTING: the CLI prints a per-file note to STDERR (e.g. `doc.txt: no change,
+  not versioned`) so a no-op is never mistaken for a recorded version, while
+  STDOUT stays clean for scripting.
+- BATCH / RECURSE: in a multi-file or `-R` add/update, each file is judged
+  independently -- changed files version normally, unchanged files are skipped
+  with the note above, and the command still exits 0. A no-change file is NOT a
+  batch failure and does NOT trigger the transactional abort (5.4a); only a genuine
+  error (a binary file per 2.2.2, or an `update` target absent from the archive,
+  RC 8) aborts the batch and leaves the archive byte-for-byte unchanged.
+- `--generations <n>` ON A NO-CHANGE SAVE: the content stores nothing, but an
+  explicitly supplied generation cap is still applied to the file (and may trigger
+  a re-base/trim if the existing count now exceeds it), since setting the cap is a
+  separate intent from recording a new version. Omitting `--generations` leaves
+  the cap untouched, as stated above.
 
 ### 5.4a Transactional (all-or-nothing) writes -- DECIDED
 
@@ -458,6 +684,219 @@ TRANSACTIONAL across the whole batch:
 - On failure the command exits non-zero (RC 8 when a target does not qualify,
   otherwise a general failure code).
 
+### 5.4b Directory recursion (`-R` / `--recurse`) -- DECIDED
+
+`add` and `update` take file arguments, not directories. `-R` / `--recurse`
+extends them to descend into directory arguments and ingest the files beneath.
+
+- FLAG SPELLING: `-R` (uppercase) or `--recurse`. Uppercase deliberately, because
+  the lowercase short `-r` is already the `remove` alias (section 5.5); reusing it
+  for recursion would be ambiguous. Uppercase `-R` also matches the common
+  recursive-flag convention (`cp -R`, `grep -R`, `ls -R`).
+
+- WITHOUT `-R`: a directory given as a file argument is a usage error (RC 2) --
+  add/update operate on files, and silently skipping a directory would hide a
+  mistake.
+
+- WITH `-R`: each argument is classified:
+  - a FILE argument is ingested as before (its name is the stored archive name,
+    exactly as in the non-recursive case -- `-R` does not change how plain file
+    arguments are named);
+  - a DIRECTORY argument becomes the RECURSION ROOT: the directory is walked and
+    every regular file found beneath it (at any depth) is ingested.
+
+- STORED NAME = RELATIVE PATH. A file discovered under a recursed directory is
+  stored under its path RELATIVE to the recursion root, with the root directory's
+  own name as the leading component, using `/` as the separator on every
+  platform (the manifest `name` field already permits `/`, section 2 /
+  manifest.rs). Example: `walrus add a.wal src -R` where `src/` contains
+  `main.rs` and `net/http.rs` stores the archive names `src/main.rs` and
+  `src/net/http.rs`. This makes the relative tree round-trip: `extract`
+  (section 5.2.1) already recreates stored relative paths on disk, so a recursed
+  add followed by an extract reproduces the directory layout.
+
+- MASK INTERACTION: a wildcard argument (section 5, `<file-mask>`) still expands
+  via the shell / mask matcher to the set of paths it matches. `-R` governs only
+  how a DIRECTORY among those paths is treated (descend vs. RC 2). A mask that
+  matches only files behaves identically with or without `-R`.
+
+- SYMLINKS AND SPECIAL FILES: the walk follows regular files only. Symbolic links
+  are NOT followed (avoids cycles and escaping the recursion root); directory
+  symlinks and non-regular files (devices, sockets, FIFOs) are skipped. A skipped
+  entry is reported on stderr but does not fail the batch.
+
+- BINARY FILES: recursion does not relax the text-only rule (section 2.2.2). A
+  binary file encountered during the walk is rejected like any other binary
+  input; under the batch transaction (section 5.4a) that aborts the whole add/
+  update and leaves the archive unchanged. (A future `--skip-binary` ergonomics
+  option is noted as an open question, not decided here.)
+
+- DETERMINISM: directory entries are ingested in a STABLE sorted order (by
+  relative path) so a given directory tree always produces the same batch order
+  and the same resulting archive, satisfying the deterministic-output rule in the
+  testing convention.
+
+- EMPTY DIRECTORIES carry no file and are simply not represented (the archive
+  tracks files, not directory nodes).
+
+OPEN (ergonomics, not blocking): `--skip-binary` to skip rather than reject binary
+files during a recurse; include/exclude globs layered on top of the walk. Both are
+additive and can be decided when the add/update implementation lands.
+
+### 5.4c Cross-platform names and mask semantics -- DECIDED
+
+Recursion (5.4b) stores a RELATIVE PATH as the archive `name`. Those names must
+round-trip between platforms (an archive built on Windows must extract to the
+identical tree on Linux and vice versa), so the separator handling and the
+`<file-mask>` matching are pinned here. These rules apply to every command that
+reads or matches a stored name (`query`, `extract`, `cat`, `remove`), not just
+`add`/`update`.
+
+- CANONICAL STORED SEPARATOR IS `/`, ALWAYS. A stored `name` uses `/` as its one
+  and only path separator on every platform (restating the 5.4b invariant). The
+  archive is thus platform-neutral: it never contains a `\` as a separator.
+
+- NORMALIZE ON WRITE (add/update, the producing side). When deriving a stored
+  name from an on-disk relative path, convert the running platform's OS path
+  separator to `/`. On Windows that means `\` (the OS separator) becomes `/`; the
+  name `src\net\http.rs` is stored as `src/net/http.rs`. On a POSIX platform the
+  separator is already `/` and NO backslash substitution is performed -- a `\` in
+  a POSIX filename is a legal DATA character and is preserved verbatim (it is not
+  a separator there). So the rule is "normalize the OS's actual separator", NOT
+  "replace all backslashes"; the latter would corrupt a POSIX file literally
+  named `a\b.txt`.
+
+- LOCALIZE ON READ (extract, the restoring side). Extract splits a stored name on
+  `/` and rebuilds the on-disk path with the LOCAL platform separator (identity
+  on POSIX; `/` -> `\` on Windows). Intermediate directories are created as
+  needed (mkdir -p semantics). Extract MUST NOT hand a raw stored string to the
+  OS and rely on incidental acceptance; it splits on `/` and joins components.
+
+- MASK MATCHING IS SEGMENT-AWARE OVER `/`. A `<file-mask>` is matched against the
+  stored `/`-separated name with these glob semantics (one rule shared by
+  `query`, `extract`, `remove`):
+  - `*` matches within a single path segment and does NOT cross `/`
+    (so `src/*` matches `src/main.rs` but NOT `src/net/http.rs`);
+  - `**` matches across segments including `/`
+    (so `src/**` matches both `src/main.rs` and `src/net/http.rs`);
+  - `?` matches a single non-`/` character;
+  - a mask with no wildcard is an exact whole-name match.
+  Matching is performed on the normalized `/` form, so the SAME mask selects the
+  SAME files regardless of the platform the command runs on. (A shell may also
+  expand an unquoted wildcard before the CLI sees it; that is the shell's doing
+  and is independent of this internal matcher, which operates on stored names.)
+
+### 5.4d Extract naming safety: reserved names, path escaping, sanitize, rename -- DECIDED
+
+A stored name is platform-neutral, but the TARGET filesystem may be unable to
+represent it: Windows reserves characters (`< > : " | ? *`) and device names
+(`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with or without an
+extension), forbids trailing dots/spaces, and is case-insensitive; a crafted or
+cross-platform archive may also carry a name that escapes the output directory.
+Extract's policy, consistent with the fidelity-first, refuse-by-default posture
+already used for overwrite safety (5.2.1):
+
+- SECURITY -- PATH ESCAPING IS ALWAYS REFUSED (not optional, no flag relaxes it).
+  Before writing, extract rejects any stored name that, once resolved under
+  `-o <dir>`, would land OUTSIDE `-o <dir>`: an absolute path, a leading `/`, a
+  drive-qualified path, or any `..` component. Such a file is refused with a
+  stderr message and the command exits RC 2. This closes the "zip-slip" class of
+  vulnerability and holds even with `--sanitize` or `--force`.
+
+- DEFAULT -- REFUSE AND REPORT (per file). A target that the local filesystem
+  cannot represent (reserved device name, illegal character, trailing dot/space,
+  or a case-collision with a file already written this run) is REFUSED for that
+  file, reported on stderr naming the file and the reason, and the command exits
+  RC 2. Other selected files still extract: extract writes to disk per file and
+  is NOT transactional (unlike the mutate ops in 5.4a), so one unrepresentable
+  file does not abort the batch. No silent mangling by default -- a renamed file
+  would no longer match its stored name and would break the add/extract
+  round-trip invariant.
+
+- OPT-IN -- `--sanitize` (bulk convenience, the 7-Zip-style path). When the user
+  wants the bytes out and does not need names preserved, `--sanitize` deterministic-
+  ally rewrites an unrepresentable target so it can be written: reserved characters
+  -> `_`, a reserved device name gets a `_` suffix (`aux` -> `aux_`), trailing dots/
+  spaces trimmed. Each remapping is reported on stderr (stored name -> written
+  name) so the result is auditable. `--sanitize` never relaxes the path-escaping
+  refusal above, and still refuses (RC 2) if a sanitized name collides with an
+  already-written file unless `--force` is also given.
+
+- SINGLE-FILE RENAME IS AVAILABLE TODAY VIA `cat`. To restore ONE file under a
+  chosen name, `cat` already writes raw bytes to stdout with redirection as the
+  rename mechanism (5.2.2): `walrus cat a.wal "weird:name.txt" > safe.txt`. This
+  is the supported single-file rename path and needs no new flag. (It does not
+  restore recorded attributes or create directories -- those are extract's job.)
+
+- RETURN CODES: path-escape or unrepresentable-name refusal -> RC 2 (usage/safety),
+  matching the existing overwrite-refusal code; the beyond-last-index RC 4 and the
+  target-missing RC 8 semantics from 5.2.1 / section 5 are unchanged.
+
+OPEN (ergonomics, not blocking): an explicit extract rename flag `--as <name>`
+(valid only when the mask selects exactly one file, same single-match rule as
+`cat`) to restore that one file under a given name WITH attribute restoration and
+`-o`/`--force` -- the capability `cat` cannot provide. Deferred unless real use
+demands it; `cat`-with-redirect covers single-file rename in the meantime.
+
+### 5.4e Reading content from stdin (`-` + `--name`) -- DECIDED
+
+`add` and `update` take file-path arguments and derive each tracked file's
+archive `name` from its path (section 5.4b/5.4c). A piped stream has no path, so
+stdin ingestion needs an explicit source marker and an explicit name. This
+matches the universal Unix convention (`tar`, `cat`, `curl -T -`) and reuses the
+existing POSIX `-` idiom and `--` option terminator (section 4); it adds no
+format change (INV-1) and no new library primitive -- the buffered bytes funnel
+through the same `Archive::add` / `Archive::update` path as a file argument.
+
+- SOURCE MARKER `-`: a single `-` in the file-operand position means "read the
+  content from STDIN". The CLI reads stdin to EOF into a buffer, then proceeds
+  exactly as if that buffer were a file's bytes.
+
+      some-command | walrus add    <archive> - --name notes.txt
+      some-command | walrus update <archive> - --name notes.txt
+
+- `--name <stored-name>` IS REQUIRED WITH `-`. There is no path to derive from,
+  and the archive is multi-file, so every tracked file needs a name. A `-` source
+  WITHOUT `--name` is a usage error (RC 2). The value becomes the manifest `name`
+  VERBATIM: it uses `/` as its only separator (section 5.4c), and is subject to
+  the same path-escaping and reserved-name rules that govern any stored name
+  (section 5.4d) -- an escaping or illegal `--name` is refused RC 2.
+  (`--name` is meaningful ONLY with a `-` source; supplying it alongside file
+  arguments is a usage error, RC 2.)
+
+- EXACTLY ONE STREAM. stdin is a single stream: `-` may appear at most once, and
+  `-` may NOT be mixed with file-path arguments in the same invocation (RC 2).
+  `-R` / `--recurse` is meaningless with `-` (there is no directory to walk) and
+  is a usage error (RC 2).
+
+- TEXT-ONLY, SAME AS A FILE. The buffered stdin bytes are subject to the
+  text-only rule (section 2.2.2): non-text / invalid-UTF-8 / NUL-bearing input is
+  rejected with the `BinaryInput` error, exactly as a binary file argument would
+  be. The 0.1 CLI is UTF-8-only (no `--encoding`, section 5.3), so a non-UTF-8
+  stream is rejected; piping arbitrary binary (e.g. `tar c | walrus add`) is not
+  supported in 0.1 by design.
+
+- DIRECTION / GENERATIONS / TRANSACTIONS UNCHANGED. `--generations <n>` and the
+  create-time direction flags (`--wal`/`--wbl`/`--direction`, section 5.3) apply
+  to a stdin `add` identically to a file `add`; the write is transactional
+  (section 5.4a). `update` from stdin obeys the same "must add first" rule
+  (RC 8, section 5.4) when `--name` is not already tracked.
+
+- NO-CHANGE SAVE. A stdin stream byte-identical to the named file's current
+  version is the success no-op of section 5.4 (RC 0, stderr note, no new
+  version), exactly as for a file argument.
+
+RATIONALE: the only genuinely new decisions are the source marker and the
+name -- everything else reuses existing, already-decided machinery. Requiring
+`--name` (rather than inventing a default like `stdin` or deriving one from a
+`/dev/fd` path) keeps the behaviour identical and predictable on every platform,
+including extension-blind and `/dev`-less systems.
+
+OPEN (ergonomics, not blocking 0.1): making `--name` OPTIONAL when the invoking
+shell exposes the source through process substitution or `/dev/fd` (so a name
+could be inferred) -- platform-specific and deferred; 0.1 always requires
+`--name` with `-`.
+
 ### 5.5 Remove (new)
 
 ```
@@ -470,7 +909,9 @@ walrus <archive> <file-mask> -r [--force]         # alias
 - If no tracked file matches: fail RC 8 (consistent with update/condense).
 - DECIDED (safety): if a wildcard mask matches MORE THAN ONE file, `--force` is
   required. Without it, remove refuses, lists what would be deleted, and exits
-  RC 2. A mask matching exactly one file does not need `--force`.
+  RC 2 (the library's `AmbiguousRemove` error, section 6). A mask matching
+  exactly one file does not need `--force`. A mask matching NO file is the
+  `NotTracked` error -> RC 8.
 
 ### 5.6 Condense
 
@@ -496,19 +937,68 @@ NOTE: condense is destructive -- it discards recoverable history. This is the
 corrected definition; the earlier draft mistakenly described condense using
 update's wording.
 
+### 5.7 Convert (`.wal <-> .wbl`) -- DECIDED
+
+```
+walrus convert <archive> [file-mask] --to <wal|wbl> [-o <name>]
+```
+
+- Purpose: flip replay DIRECTION. `--to wal` makes the selected file(s) forward
+  (original base + forward log); `--to wbl` makes them reverse (current base +
+  reverse log). This changes the archive VARIANT/representation, not the content,
+  which is why it lives in the CLI and is NOT an "export" (section 4 scope
+  boundary).
+- PER-FILE FLIP IS THE PRIMITIVE. With a `file-mask`, only matching files are
+  converted; WITHOUT a mask, the WHOLE archive is converted (the no-mask case is
+  the degenerate "all files" form of the same per-file operation).
+- ROUND-TRIP GUARANTEE: convert inverts each splice and re-bases so that
+  reconstruction is BYTE-IDENTICAL for every version index before and after; a
+  forward -> reverse -> forward round-trip reproduces every index exactly
+  (FR-W7 AC4, INV-3). `count` and checkpoints are preserved.
+- MANIFEST `variant`: a WHOLE-ARCHIVE convert (no mask) MAY update the manifest
+  `variant` to the new predominant direction and re-derives `base_role` /
+  `log_direction` to match (so the manifest still validates on re-open). A MASKED
+  convert leaves the archive `variant` untouched (the archive becomes mixed, which
+  is legal -- direction is per file, section 6a).
+- EXTENSION: convert MAY SUGGEST an extension rename (e.g. "converted to reverse;
+  consider renaming to `*.wbl`") on stderr, but MUST NOT auto-rename the file on
+  disk. The on-disk name changes only if the user passes an explicit `-o <name>`
+  (write the converted archive under that name) or renames it themselves. This
+  matches the add seed-order rule that the extension is a convenience, never
+  authoritative over the manifest.
+- Transactional like every other mutation (section 5.4a): a failed convert leaves
+  the original archive byte-for-byte unchanged.
+- No-match mask -> RC 8 (target does not exist), consistent with the other
+  mask-driven commands.
+
 ---
 
 ## 6. Return codes
 
 | Code | Meaning |
 |------|---------|
-| 0    | Success |
+| 0    | Success (includes a no-change add/update no-op, section 5.4) |
 | 2    | Usage error (unknown option, mutually exclusive operations, bad args) |
 | 4    | Extract index beyond the last recorded change; original returned with a warning |
-| 8    | Target file does not exist in the archive (update / remove / condense) |
+| 8    | Target file does not exist in the archive (update / remove / condense / convert) |
 
 DECIDED: RC 2 for usage errors (standard GNU convention), including the
 multi-match remove-without-`--force` case.
+
+TYPED ERROR -> RETURN CODE MAPPING. The `walrus-fmt` library surfaces typed
+errors (FR-W7); the CLI maps them to return codes so the doc contract and the
+library error enum stay aligned:
+
+| Library error (`WalrusError`) | Trigger | Return code |
+|-------------------------------|---------|-------------|
+| `NotTracked` | `update` / `remove` / `condense` / `convert` on a file absent from the archive | 8 |
+| `AmbiguousRemove` | `remove` with a mask matching more than one file and no `--force` | 2 |
+| `BinaryInput` | a non-text (binary / invalid-UTF-8 / NUL-bearing) input to `add` / `update` | general failure, non-zero; aborts the batch transaction (5.4a) |
+| `SpliceNotCharBoundary` | an editor-supplied splice that falls mid-UTF-8-character (library/editor path; not reachable from the file-oriented CLI) | general failure, non-zero |
+
+A beyond-last-index selector on `extract` / `cat` is NOT an error of this class:
+it writes the ORIGINAL version with a warning and exits RC 4 (sections 5.2.1 /
+5.2.2).
 
 ---
 
@@ -528,6 +1018,38 @@ self-describing when extracted standalone:
 - The exact byte layout (where the field sits in the `.wchg` header) is deferred
   to the FORMAT.md rewrite; the requirement here is only that the attribute
   EXISTS and is readable standalone.
+- NO CLI SURFACE BY DESIGN: standalone `.wchg` replay (reconstructing a bare
+  `.wchg` + its base outside any archive, FR-W9) is a `walrus-fmt` LIBRARY
+  capability (consumed by Walker's history viewer, section 6b.6). No `walrus` or
+  `walx` subcommand operates on a bare `.wchg`; the CLI always works on a whole
+  `.wal`/`.wbl` archive. This omission is intentional, not a gap.
+
+### Record timestamps are UTC -- DECIDED
+
+Each change record carries an optional `ts` field (FORMAT.md 4.1). When present
+it is a UTC ISO-8601 instant in the FIXED shape `YYYY-MM-DDThh:mm:ssZ` -- the
+trailing `Z` (Zulu / UTC) is REQUIRED. Rationale and rules:
+
+- STORE UTC, NEVER LOCAL TIME. UTC is unambiguous and totally ordered; local time
+  is not (it repeats an hour across a DST fall-back and is meaningless once an
+  archive moves between machines or timezones). The `--at <T>` snapshot selector
+  (section 5.2.1) needs a monotonic order to resolve "the version as at T", which
+  only UTC provides. The library's timestamp parser accepts ONLY this fixed `...Z`
+  shape and rejects any offset or local-time string, so a non-UTC `ts` would
+  silently fail timestamp addressing -- another reason the writer must emit UTC.
+- `walrus add` / `update` STAMP EACH SAVE. When the CLI records a new version it
+  sets that record's `ts` to the save instant formatted as UTC
+  `YYYY-MM-DDThh:mm:ssZ` (seconds resolution), so `--at` works on CLI-produced
+  archives. A record with no `ts` is simply skipped by `--at` matching (an
+  archive whose writer did not stamp records supports `--index`/`--version` but
+  not meaningful `--at`).
+- DISPLAY IS SEPARATE. The stored and COMPARED value is always UTC; a UI (Walker,
+  or a future `walrus log`) MAY render timestamps in the viewer's local time for
+  humans, but never stores or addresses by local time. (Same convention as git:
+  an absolute instant is stored; tools display local.)
+- DETERMINISM NOTE: fixtures and tests must use FIXED timestamp strings, not the
+  wall clock, per the testing steering -- only the live `add`/`update` path reads
+  the real clock.
 
 ---
 
