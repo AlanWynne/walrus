@@ -84,6 +84,26 @@ logic (reconstruct, version addressing, re-base, diff, player). Scoped
 10. Docs: keep README.md / crate READMEs aligned with the shipped reality.
     (FORMAT.md / CLI-DESIGN.md are the source of truth.)
 
+## Walker frontend (step 9) -- per-FR honest state
+
+Tracked in detail in `.agents/tasks/requirements-walker.md`; the load-bearing
+cross-stream note:
+
+- FR-K1 source seam, FR-K2 WalrusSource adapter, FR-K4 two-pane navigator: done.
+- FR-K5 import = add/update (resolved automatically): MODEL + SEAM done,
+  byte-mutation GATED on FR-W7 merge. The FilePicker seam (real `rfd` + test
+  fake), the pure `ImportResolution` state machine (add / update-prompt / add-as),
+  the `WalrusSource` import orchestration via the `MutateArchive` seam (tested
+  with a `FakeArchive`), and the navigator/app wiring are all done and
+  headless-tested GREEN. The one piece still missing is the REAL byte-mutation:
+  `walrus_fmt`'s `Archive::add`/`update` (FR-W7) is NOT on this branch, so the
+  real `MutateArchive` impl and `WalrusSource::import` live behind the
+  off-by-default `import-mutate` walker feature, and the on-disk AC1 +
+  transactional-guarantee tests (`tests/import.rs::on_disk`) are compiled only
+  under that feature. They un-ignore the moment FR-W7 merges and the feature is
+  flipped on. The write path is deliberately CONCRETE (off the read-only
+  `HistorySource` trait).
+
 ## Previously "done" -- now obsolete or needs re-work (OLD single-file format)
 
 These compiled and were unit-tested against the OLD single-file format. They are

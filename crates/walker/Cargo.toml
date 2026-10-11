@@ -15,6 +15,15 @@ categories = ["visualization", "gui"]
 name = "walker"
 path = "src/main.rs"
 
+[features]
+# FR-K5 import byte-mutation. OFF by default because it needs the `walrus_fmt`
+# mutate API (`Archive::add`/`update`, FR-W7), a cross-stream dependency not yet
+# merged on this branch. The import RESOLUTION, picker seam, prompt state, and
+# WalrusSource orchestration are built and headless-tested WITHOUT this feature;
+# flipping it on (once FR-W7 lands) wires `WalrusSource::import` to the real
+# transactional mutate and un-ignores the on-disk import tests in tests/import.rs.
+import-mutate = []
+
 [dependencies]
 walrus-fmt = { workspace = true, features = ["export-all"] }
 anyhow = { workspace = true }

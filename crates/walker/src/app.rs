@@ -18,6 +18,7 @@ use eframe::egui;
 use walrus_fmt::{Variant, WalrusFile};
 
 use crate::chrome::{self, ExportContext, StatusInfo};
+use crate::import::{ImportState, RfdPicker};
 use crate::navigator::{self, NavigatorState};
 use crate::player::Player;
 use crate::source::{HistorySource, VersionId, WalrusSource};
@@ -28,13 +29,21 @@ use crate::view::{self, Renderer};
 /// The Walker application state.
 pub struct WalkerApp {
     player: Option<Player>,
-    /// The format-agnostic history source for the open archive, if any. The
-    /// navigator and the trait-driven viewer path are coded to this seam; the
-    /// `WalrusSource` concrete type is named ONLY where it is constructed
-    /// (`open_file`).
-    source: Option<Box<dyn HistorySource>>,
+    /// The history source for the open archive, if any.
+    ///
+    /// Reads go through the format-agnostic [`HistorySource`] trait (via the
+    /// `source()` accessor), so the navigator and the viewer path stay coded to
+    /// the seam. The field is the CONCRETE `WalrusSource` rather than a
+    /// `Box<dyn HistorySource>` because FR-K5 introduces a WRITE path
+    /// (`WalrusSource::import`) that the read-only trait deliberately does not
+    /// carry: Phase 1 has exactly one writable backend. When a second,
+    /// read-only backend arrives, reintroduce a boxed trait object for reads and
+    /// keep a separate concrete handle only for the writable source.
+    source: Option<WalrusSource>,
     /// The navigator's selection model (active file + multi-select set).
     navigator: NavigatorState,
+    /// The FR-K5 pending-import model, threaded through the navigator.
+    import: ImportState,
     /// Cached current-version bytes, refreshed on change.
     current_bytes: Vec<u8>,
     /// The renderer derived from the loaded document's MIME and name.
@@ -55,6 +64,7 @@ impl Default for WalkerApp {
             player: None,
             source: None,
             navigator: NavigatorState::default(),
+            import: ImportState::default(),
             current_bytes: Vec::new(),
             renderer: Renderer::Text,
             status: "Open a .wal or .wbl file to begin.".to_string(),
@@ -99,7 +109,7 @@ impl WalkerApp {
                             self.navigator.select(first);
                             self.renderer = navigator_renderer(&source, &self.navigator);
                         }
-                        self.source = Some(Box::new(source));
+                        self.source = Some(source);
                     }
                     Err(e) => {
                         self.source = None;
@@ -140,6 +150,65 @@ impl WalkerApp {
             .pick_file()
         {
             self.open_file(path);
+        }
+    }
+
+    /// The open source as a read-only [`HistorySource`], if any.
+    ///
+    /// Reads borrow the concrete `WalrusSource` as `&dyn HistorySource` so the
+    /// navigator and viewer stay coded to the format-agnostic seam even though
+    /// the field is concrete for the FR-K5 write path.
+    fn source(&self) -> Option<&dyn HistorySource> {
+        self.source.as_ref().map(|s| s as &dyn HistorySource)
+    }
+
+    /// Apply a resolved FR-K5 import through the concrete source, then refresh
+    /// the navigator list and the active selection so the new/updated file is
+    /// shown. Sets a status string on success or failure.
+    ///
+    /// The byte-mutation + transactional write live behind the `import-mutate`
+    /// feature (the `walrus_fmt` mutate API, FR-W7, is not yet merged on this
+    /// branch). Without the feature the import resolves and this records that the
+    /// mutate path is pending that cross-stream work, leaving the archive
+    /// untouched.
+    fn apply_import(&mut self, outcome: crate::import::ImportOutcome) {
+        if self.source.is_none() {
+            return;
+        }
+        let target = outcome.resolution.target_name().to_string();
+        #[cfg(feature = "import-mutate")]
+        {
+            let source = self.source.as_mut().expect("source is Some");
+            let result = source.import(&outcome.resolution, &outcome.bytes, &outcome.path);
+            match result {
+                Ok(()) => {
+                    self.status = format!("Imported {target}");
+                    self.refresh_after_import(&target);
+                }
+                Err(e) => {
+                    self.status = format!("Import of {target} failed: {e}");
+                }
+            }
+        }
+        #[cfg(not(feature = "import-mutate"))]
+        {
+            self.status = format!(
+                "Import of {target} resolved; byte-mutation pending the walrus-fmt mutate API (FR-W7)"
+            );
+        }
+    }
+
+    /// Re-select the imported/updated file so the navigator list and the viewer
+    /// binding reflect it after a successful mutate (AC1 list refresh).
+    #[cfg(feature = "import-mutate")]
+    fn refresh_after_import(&mut self, name: &str) {
+        if let Some(source) = self.source.as_ref() {
+            if let Some(file) = source.files().into_iter().find(|f| f.name() == name) {
+                self.navigator.select(&file);
+            }
+        }
+        if let Some(source) = self.source() {
+            self.renderer = navigator_renderer(source, &self.navigator);
         }
     }
 
@@ -232,11 +301,25 @@ impl eframe::App for WalkerApp {
         // through the seam.
         if self.source.is_some() {
             let mut activated = None;
+            let mut import_outcome = None;
+            let mut import_error = None;
+            let picker = RfdPicker;
             egui::Panel::left("navigator").show(ui, |ui| {
-                let source = self.source.as_deref().expect("source is Some");
-                let action = navigator::panels(ui, source, &mut self.navigator);
+                let source = self.source.as_ref().expect("source is Some") as &dyn HistorySource;
+                let action =
+                    navigator::panels(ui, source, &picker, &mut self.import, &mut self.navigator);
                 activated = action.activated;
+                import_outcome = action.import;
+                import_error = action.import_error;
             });
+            if let Some(message) = import_error {
+                self.status = message;
+            }
+            if let Some(outcome) = import_outcome {
+                // FR-K5: a resolved import applies through the concrete source
+                // (the write path) and refreshes the list/selection.
+                self.apply_import(outcome);
+            }
             if activated.is_some() {
                 // The active file changed: rebind the viewer's renderer through
                 // the seam. The central viewer reconstructs the active file at
@@ -245,7 +328,7 @@ impl eframe::App for WalkerApp {
                 // per-file `Player` rebind is deferred app-shell wiring: `Player`
                 // owns a `WalrusFile` the seam does not expose, so FR-K4 binds
                 // through the trait (model-level AC2, proven headlessly).
-                if let Some(source) = self.source.as_deref() {
+                if let Some(source) = self.source() {
                     self.renderer = navigator_renderer(source, &self.navigator);
                 }
             }
@@ -297,7 +380,7 @@ impl eframe::App for WalkerApp {
                 let version = VersionId::Index(self.player.as_ref().map_or(0, Player::index));
                 let active = self.navigator.active().cloned();
                 egui::ScrollArea::both().show(ui, |ui| {
-                    match (self.source.as_deref(), active.as_ref()) {
+                    match (self.source(), active.as_ref()) {
                         // Drive the viewer through the seam for the selected
                         // file: reconstruct + paint via one byte path (AC2).
                         (Some(source), Some(active)) => {

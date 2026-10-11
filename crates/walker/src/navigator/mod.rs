@@ -20,6 +20,7 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 
+use crate::import::{FilePicker, ImportOutcome, ImportState};
 use crate::source::{FileRef, HistorySource};
 
 mod external;
@@ -88,21 +89,31 @@ pub struct NavigatorAction {
     /// Set to the newly activated file when a row was clicked this frame, so the
     /// app can rebind the player/viewer to that file's timeline (AC2).
     pub activated: Option<FileRef>,
+    /// A resolved import (FR-K5) the app should apply through the source and
+    /// then refresh the file list, when one became ready this frame.
+    pub import: Option<ImportOutcome>,
+    /// A human-readable error from reading the picked import file, if the pick
+    /// failed before resolution.
+    pub import_error: Option<String>,
 }
 
 /// Lay out both navigator panes: the internal file list (top) and the external
-/// import scaffold (bottom). Returns the [`NavigatorAction`] for this frame.
+/// import affordance (bottom). Returns the [`NavigatorAction`] for this frame.
 ///
 /// Driven entirely through `source` (`files()` + `file_info()`), so the
-/// navigator stays coded to the format-agnostic seam.
+/// navigator stays coded to the format-agnostic seam. `picker` is injected (not
+/// constructed in the pane) so tests pass a fake and never touch the OS dialog;
+/// `import` carries the FR-K5 pending-import model across frames.
 pub fn panels(
     ui: &mut egui::Ui,
     source: &dyn HistorySource,
+    picker: &dyn FilePicker,
+    import: &mut ImportState,
     state: &mut NavigatorState,
 ) -> NavigatorAction {
-    let action = internal::internal_pane(ui, source, state);
+    let mut action = internal::internal_pane(ui, source, state);
     ui.separator();
-    external::external_pane(ui, state);
+    external::external_pane(ui, source, picker, import, &mut action);
     action
 }
 

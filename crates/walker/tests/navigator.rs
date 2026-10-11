@@ -13,9 +13,20 @@
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
+use walker::import::{FilePicker, ImportState};
 use walker::navigator::{self, NavigatorState};
 use walker::source::testsupport::InMemorySource;
 use walker::source::{HistorySource, VersionId};
+
+/// A no-op [`FilePicker`] for the navigator tests: they never click Import, so
+/// the picker is never invoked. Keeps the panes coded to the injected seam.
+struct NoPicker;
+
+impl FilePicker for NoPicker {
+    fn pick(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+}
 
 /// AC1: the internal pane lists every tracked file with its index size and
 /// generation cap (plus current size), driven headlessly from a multi-file
@@ -25,9 +36,10 @@ fn internal_pane_lists_every_tracked_file_with_index_size_and_generation_cap() {
     let source = InMemorySource::sample();
     let state = NavigatorState::default();
 
+    let mut import = ImportState::default();
     let mut harness = Harness::new_ui_state(
         move |ui, state: &mut NavigatorState| {
-            navigator::panels(ui, &source, state);
+            navigator::panels(ui, &source, &NoPicker, &mut import, state);
         },
         state,
     );
@@ -85,9 +97,10 @@ fn selecting_a_file_binds_the_active_ref_and_routes_reconstruct() {
         .expect("csv current bytes");
 
     let state = NavigatorState::default();
+    let mut import = ImportState::default();
     let mut harness = Harness::new_ui_state(
         move |ui, state: &mut NavigatorState| {
-            navigator::panels(ui, &source, state);
+            navigator::panels(ui, &source, &NoPicker, &mut import, state);
         },
         state,
     );
@@ -137,9 +150,10 @@ fn multi_select_of_two_files_enables_the_batch_action_button() {
         "one selected file does not enable batch actions"
     );
 
+    let mut import = ImportState::default();
     let mut harness = Harness::new_ui_state(
         move |ui, state: &mut NavigatorState| {
-            navigator::panels(ui, &source, state);
+            navigator::panels(ui, &source, &NoPicker, &mut import, state);
         },
         state,
     );
