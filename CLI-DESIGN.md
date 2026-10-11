@@ -317,6 +317,81 @@ surface -- it provides `extract` (restore to disk, section 5.2.1) and `cat`
 (bytes to stdout, section 5.2.2) and nothing that mutates an archive. The full
 management set (query/add/update/remove/condense/convert) is `walrus`-only.
 
+#### `wal` as an OPT-IN, collision-aware alias -- DECIDED
+
+Rejecting `wal` as the CANONICAL binary name (above) does NOT forbid `wal` as an
+optional alias. The two are different commitments: the canonical name is what the
+installer ALWAYS puts on `$PATH` (and must never silently shadow pywal's `wal`),
+whereas an alias is something the user deliberately opts into when their `$PATH`
+is clear. So `walrus` remains the one guaranteed binary, and `wal` is offered as
+a convenience the user turns on at their own discretion -- "usable as long as the
+wallpaper tool (pywal) is not in the way", exactly the intended framing.
+
+LOAD-BEARING RULE: nothing in a default install may create a `wal` entry on
+`$PATH`. No second `[[bin]] name = "wal"`, no post-install script that drops a
+`wal` unconditionally. Doing so would reintroduce the precise silent-shadow
+problem that got `wal` rejected -- it would merely move the collision from
+"always" to "on install", which is still default-on. The alias is ALWAYS opt-in
+and ALWAYS collision-checked before creation. This mirrors how `ripgrep` ships
+`rg`, and how Debian ships `batcat`/`fdfind` and documents a user-added short
+alias rather than forcing one.
+
+Two mechanisms, both opt-in:
+
+1. DOCUMENTED SHELL ALIAS (zero-risk, always available). The README / install
+   notes tell the user how to add the alias themselves:
+   - POSIX shells: `alias wal=walrus` in the shell rc.
+   - PowerShell: `Set-Alias wal walrus` (or a thin function) in the profile.
+   A user-defined shell alias is resolved by the shell before `$PATH`, is trivial
+   to remove, and can never clobber another binary on disk. This alone satisfies
+   the request for most users and needs no code.
+
+2. `walrus alias` HELPER SUBCOMMAND (opt-in, collision-aware). For users who want
+   a real `wal` on `$PATH` (so it works from scripts and other programs, not just
+   an interactive shell), `walrus` provides a guarded installer:
+
+   ```
+   walrus alias install [--name <alias>] [--dir <dir>] [--force]
+   walrus alias remove  [--name <alias>] [--dir <dir>]
+   walrus alias status  [--name <alias>]
+   ```
+
+   - DEFAULT ALIAS NAME is `wal`; `--name` allows a different short name.
+   - `install` resolves a target directory (`--dir`, else the first user-writable
+     `$PATH` entry, e.g. `~/.local/bin` on POSIX or the user bin dir on Windows)
+     and creates a shim pointing at the real `walrus` binary: a SYMLINK on POSIX,
+     and on Windows a small shim (a `.cmd`/`.exe` launcher; a symlink only if the
+     environment permits it without elevation).
+   - COLLISION CHECK IS MANDATORY. Before creating anything, `install` searches
+     `$PATH` for an existing `wal`. If one is found that is NOT our own shim (e.g.
+     pywal), it REFUSES: prints what owns `wal` (the resolved path) and exits
+     RC 2, creating nothing -- UNLESS `--force` is given, in which case it still
+     refuses to overwrite a file it did not create and instead instructs the user
+     to pick `--name` or `--dir` (we never delete or shadow a foreign binary).
+     An existing `wal` that IS our own prior shim is simply re-pointed (idempotent).
+   - `remove` deletes ONLY a shim we created (verified by target), never a foreign
+     `wal`; a no-op with a note if none of ours is present.
+   - `status` reports whether a `wal` is on `$PATH`, its resolved target, and
+     whether it is our shim, pywal, or something else -- so the user can decide
+     before installing.
+   - RETURN CODES: refuse-on-foreign-collision -> RC 2 (usage/safety, matching the
+     refuse-by-default convention elsewhere); success -> 0; `remove` with nothing
+     of ours present -> 0 with a stderr note.
+
+   The helper does NOT modify shell rc files or the registry; it only manages a
+   single shim file in a bin directory, so `remove` fully reverses `install`.
+
+RATIONALE: this gives the short, ergonomic `wal` to users who want it, on both
+the interactive-shell path (mechanism 1) and the real-`$PATH` path (mechanism 2),
+without the canonical install ever endangering a pywal user. The canonical-name
+DECIDED above is unchanged; this only adds an opt-in layer on top of it.
+
+OPEN (not blocking 0.1): distro-level integration via `update-alternatives`
+(Linux) so a packager can register `wal` as a managed alternative the user
+selects -- packaging-maintainer territory, deferred past the 0.1 CLI. The
+`walrus alias` helper above is the cross-platform, no-package-manager answer in
+the meantime.
+
 ---
 
 ## 5. Commands
