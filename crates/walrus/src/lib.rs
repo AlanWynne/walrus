@@ -31,6 +31,7 @@ mod mutate_convert;
 #[cfg(feature = "i18n")]
 mod mutate_i18n;
 mod mutate_remove;
+mod mutate_stamp;
 mod rebase;
 mod reconstruct;
 mod record;

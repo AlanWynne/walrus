@@ -127,6 +127,17 @@ pub enum WalrusError {
         name: String,
     },
 
+    /// A caller supplied a change-record timestamp that is not the fixed UTC
+    /// shape `YYYY-MM-DDThh:mm:ssZ` the writer and the `--at` resolver require
+    /// (FORMAT.md 4.1 / section 5). The stamping seam rejects it rather than
+    /// letting a malformed `ts` enter the log, where it would silently fail
+    /// timestamp addressing.
+    #[error("invalid record timestamp '{value}' (expected UTC YYYY-MM-DDThh:mm:ssZ)")]
+    InvalidTimestamp {
+        /// The offending timestamp string.
+        value: String,
+    },
+
     /// A `remove` mask matched more than one tracked file without `force`.
     #[error("mask '{mask}' matches {count} files; pass force to remove all: {matches}")]
     AmbiguousRemove {

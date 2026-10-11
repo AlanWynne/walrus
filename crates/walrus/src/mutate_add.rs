@@ -45,7 +45,7 @@ impl Archive {
         let text = utf8_or_binary(bytes)?;
 
         if let Some(id) = self.id_for_selector(name) {
-            self.store_save_from_text(&id, text)?;
+            self.store_save_from_text(&id, text, None)?;
             if let Some(n) = generations {
                 self.set_generations_by_id(&id, n)?;
             }
@@ -92,7 +92,7 @@ impl Archive {
         // against the version it applies to before anything is stored.
         let current = self.current_bytes(&id)?;
         let new_current = fold_validated(&current, splices)?;
-        self.store_save(&id, &current, &new_current)
+        self.store_save(&id, &current, &new_current, None)
     }
 
     /// Diff `bytes` against the tracked file `name`'s current version and record
@@ -104,6 +104,21 @@ impl Archive {
     /// [`WalrusError::BinaryInput`] when `bytes` is not valid UTF-8.
     #[cfg(feature = "diff")]
     pub fn update(&mut self, name: &str, bytes: &[u8], generations: Option<u32>) -> Result<()> {
+        self.update_inner(name, bytes, generations, None)
+    }
+
+    /// Shared implementation of [`Archive::update`] / [`Archive::update_at`]:
+    /// diff `bytes` against the current version and record the net save,
+    /// stamping the recorded change with `ts` when supplied. `pub(crate)` so the
+    /// sibling `mutate_stamp` module can route `update_at` through it.
+    #[cfg(feature = "diff")]
+    pub(crate) fn update_inner(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        generations: Option<u32>,
+        ts: Option<&str>,
+    ) -> Result<()> {
         let id = self
             .id_for_selector(name)
             .ok_or_else(|| WalrusError::NotTracked {
@@ -111,14 +126,10 @@ impl Archive {
             })?;
         let text = utf8_or_binary(bytes)?;
         let current = self.current_bytes(&id)?;
-        let old = std::str::from_utf8(&current).map_err(|_| WalrusError::BinaryInput {
-            reason:
-                "input is not valid UTF-8; declare a source encoding (i18n) for a non-UTF-8 file"
-                    .to_string(),
-        })?;
+        let old = utf8_or_binary(&current)?;
         let diffed = crate::diff::diff(old, text)?;
         let new_current = fold_validated(&current, &diffed.splices)?;
-        self.store_save(&id, &current, &new_current)?;
+        self.store_save(&id, &current, &new_current, ts)?;
         if let Some(n) = generations {
             self.set_generations_by_id(&id, n)?;
         }
@@ -141,7 +152,8 @@ impl Archive {
     // === private helpers ================================================
 
     /// Resolve a selector (name first, then id) to a tracked-file id.
-    fn id_for_selector(&self, sel: &str) -> Option<String> {
+    /// `pub(crate)` so the sibling `mutate_stamp` module can reuse it.
+    pub(crate) fn id_for_selector(&self, sel: &str) -> Option<String> {
         self.manifest()
             .files
             .iter()
@@ -149,19 +161,29 @@ impl Archive {
             .map(|f| f.id.clone())
     }
 
-    /// The current (index 0) bytes of the tracked file `id`.
-    fn current_bytes(&self, id: &str) -> Result<Vec<u8>> {
+    /// The current (index 0) bytes of the tracked file `id`. `pub(crate)` for
+    /// the sibling `mutate_stamp` module.
+    pub(crate) fn current_bytes(&self, id: &str) -> Result<Vec<u8>> {
         self.reconstruct(&crate::FileId::from(id), crate::Version::Index(0))
     }
 
     /// Store a save for tracked file `id`, given the pre-save `old` current and
     /// the computed `new` current. Derives the one net splice and stores it
-    /// direction-dependently (decision b). `old == new` stores nothing.
-    fn store_save(&mut self, id: &str, old: &[u8], new: &[u8]) -> Result<()> {
+    /// direction-dependently (decision b). `old == new` stores nothing. When
+    /// `ts` is `Some`, every change record created for this save is stamped with
+    /// it (FR-W11 AC8); the caller has already validated its shape.
+    pub(crate) fn store_save(
+        &mut self,
+        id: &str,
+        old: &[u8],
+        new: &[u8],
+        ts: Option<&str>,
+    ) -> Result<()> {
         let net = net_splice(old, new);
-        let Some(net) = net else {
+        let Some(mut net) = net else {
             return Ok(()); // no-op save: count +0.
         };
+        net.ts = ts.map(str::to_string);
         let direction = self
             .manifest()
             .file(id)
@@ -177,8 +199,12 @@ impl Archive {
                 }
                 Direction::Reverse => {
                     // Invert against the current and advance base to new current.
+                    // Stamp the inverted record(s) representing this save too, so
+                    // a reverse file is addressable by --at exactly as a forward
+                    // one is.
                     let (new_base, inverse) = invert::invert_forward_splices(old, &[net])?;
-                    for rec in inverse.into_iter().rev() {
+                    for mut rec in inverse.into_iter().rev() {
+                        rec.ts = ts.map(str::to_string);
                         file.records.insert(0, rec);
                     }
                     file.base = new_base;
@@ -191,10 +217,17 @@ impl Archive {
         self.rederive_versions(id)
     }
 
-    /// Store a save from a UTF-8 string by diffing the net range byte-wise.
-    fn store_save_from_text(&mut self, id: &str, text: &str) -> Result<()> {
+    /// Store a save from a UTF-8 string by diffing the net range byte-wise,
+    /// stamping the recorded change with `ts` when supplied. `pub(crate)` for
+    /// the sibling `mutate_stamp` module.
+    pub(crate) fn store_save_from_text(
+        &mut self,
+        id: &str,
+        text: &str,
+        ts: Option<&str>,
+    ) -> Result<()> {
         let current = self.current_bytes(id)?;
-        self.store_save(id, &current, text.as_bytes())
+        self.store_save(id, &current, text.as_bytes(), ts)
     }
 
     /// Re-derive the manifest `versions` and `.wchg` header `count` for `id`
@@ -218,7 +251,8 @@ impl Archive {
     }
 
     /// Set the generations cap on the manifest + header for `id`, then enforce.
-    fn set_generations_by_id(&mut self, id: &str, n: u32) -> Result<()> {
+    /// `pub(crate)` for the sibling `mutate_stamp` module.
+    pub(crate) fn set_generations_by_id(&mut self, id: &str, n: u32) -> Result<()> {
         {
             let tracked = self
                 .manifest_mut()
@@ -269,8 +303,9 @@ pub(crate) fn push_tracked(
 }
 
 /// Validate `bytes` as UTF-8, mapping failure to the non-UTF-8 `BinaryInput`
-/// reason (distinct from the NUL-byte reason in `diff`).
-fn utf8_or_binary(bytes: &[u8]) -> Result<&str> {
+/// reason (distinct from the NUL-byte reason in `diff`). `pub(crate)` for the
+/// sibling `mutate_stamp` module.
+pub(crate) fn utf8_or_binary(bytes: &[u8]) -> Result<&str> {
     std::str::from_utf8(bytes).map_err(|_| WalrusError::BinaryInput {
         reason: "input is not valid UTF-8; declare a source encoding (i18n) for a non-UTF-8 file"
             .to_string(),
