@@ -243,6 +243,9 @@ conventions and convenience flag aliases:
 `query`, `extract`, `cat`, `add`, `update`, `remove`, `condense`, `convert`.
 No `export` subcommand (export is Walker-only; INV-2). Return codes per the
 table (0 ok, 2 usage, 4 index-beyond-last, 8 target-missing).
+`add` and `update` additionally accept a single `-` source operand that reads
+content from STDIN with a required `--name <stored-name>` (CLI-DESIGN section
+5.4e); see AC9.
 - AC1 `query` (default) lists tracked files + index size; `-l` adds attributes +
   log bytes.
 - AC2 Mutually exclusive operations: supplying two ops is RC 2.
@@ -290,6 +293,29 @@ table (0 ok, 2 usage, 4 index-beyond-last, 8 target-missing).
   parser accepts only the fixed `...Z` shape (FORMAT.md 4.1 / section 5). Display
   in local time is a UI concern (Walker), never stored. Fixtures/tests use fixed
   timestamp strings; only the live add/update path reads the wall clock.
+- AC9 `add` and `update` read content from STDIN when the single file operand is
+  `-`, naming the tracked file with a REQUIRED `--name <stored-name>` (CLI-DESIGN
+  section 5.4e). Like `-R` (AC7), this is a CLI-LAYER source: the CLI buffers
+  stdin to EOF and calls the existing mutate API (`Archive::add` /
+  `Archive::update`) with those bytes and the supplied name -- NO new library
+  primitive and NO format change (INV-1 untouched).
+  - AC9a `cmd | walrus add <arc> - --name foo.txt` creates/updates `foo.txt`
+    from the piped bytes; a following `walx cat <arc> foo.txt` reproduces the
+    piped content byte-identically.
+  - AC9b A `-` source WITHOUT `--name` is RC 2; `--name` supplied WITHOUT a `-`
+    source (i.e. alongside file arguments) is RC 2.
+  - AC9c `-` mixed with any file-path argument, `-` given more than once, or `-R`
+    combined with `-`, is RC 2 (stdin is a single stream, nothing to walk).
+  - AC9d The buffered stdin bytes obey the text-only rule (FR-W6 AC3 / section
+    2.2.2): a non-UTF-8 / NUL-bearing stream is rejected with `BinaryInput`
+    (non-zero), and under the transaction (FR-W4) the archive is unchanged.
+  - AC9e `update <arc> - --name bar.txt` on an untracked `bar.txt` fails RC 8
+    (FR-W7 AC2); `--generations`, the create-time direction flags (AC5), the
+    no-change no-op (FR-W11 note / CLI-DESIGN 5.4), and transactional writes
+    behave identically to a file-sourced add/update.
+  - AC9f `--name` is stored VERBATIM as the manifest `name` (`/`-separated,
+    section 5.4c) and is subject to the path-escaping / reserved-name refusals
+    (section 5.4d); an escaping or illegal `--name` is RC 2.
 
 ### FR-W12 Regenerate examples + fixtures
 Update `generate_walk.rs` / `generate_story.rs` to the multi-file manifest +

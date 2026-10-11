@@ -46,6 +46,47 @@ its own base and its own change log. This is the primary format change driving
 this discussion. It needs to be reflected in `FORMAT.md` section 2 (tar members
 move from a fixed single-file set to a per-file set).
 
+### 1.4 Compression: zstd-only in 0.1, no CLI knobs -- DECIDED
+
+The "compressed" in "compressed tar" is the archive's OUTER codec layer
+(FORMAT.md section 2). The decisions for 0.1:
+
+- CODEC IS `zstd`, FIXED. Every 0.1 archive the CLI writes is zstd-compressed.
+  gzip is RESERVED in the format (its magic is recognised so a gzip container is
+  identified, not mis-read) but no 0.1 writer emits it and the reference reader
+  returns a clear "not supported by this build" error rather than decoding it.
+- LEVEL IS A WRITER-INTERNAL CONSTANT, not a format property. The reference
+  writer uses a fixed zstd level (currently 19 -- small artefact, still fast for
+  the small text documents Walrus stores). The level is NOT recorded in the
+  archive and a reader never needs it, so changing it later is not a format
+  change.
+- NO COMPRESSION FLAGS ON THE CLI in 0.1. There is deliberately no `--codec`,
+  `--level`, `--compression`, or `--store` on any command. This matches the
+  lean-CLI dependency posture (the same reasoning that keeps `--encoding` and
+  export out of the CLI, section 4): the user never names a codec; the writer
+  picks zstd and the reader sniffs whatever it is given (FORMAT.md section 2,
+  codec-from-magic-bytes, INV-5).
+
+WHY THIS IS SAFE TO REVISIT LATER. Adding a better/alternative codec (activating
+gzip, or adding xz/lz4/brotli) is an ADDITIVE, backward-compatible change and
+needs NO decision now:
+
+- The codec wraps the whole inner tar; manifest, bases, and `.wchg` logs are
+  byte-identical regardless of codec, so reconstruction and the byte-identical
+  guarantee (FORMAT.md section 5) are untouched by a codec choice.
+- Detection is by magic bytes, never the extension, so a new codec adds a magic
+  constant plus an encode/decode arm -- no manifest field, no extension change,
+  no new library primitive.
+- Old archives keep reading unchanged; only an OLD reader facing a NEW-codec
+  archive is affected, and it fails CLOSED with the unrecognised-codec error
+  (never a silent mis-read).
+
+So the shape to expose compression later -- a `--codec`/`--level` flag on the
+mutating commands, driving the same writer -- can be added in a later CLI version
+without a format break. It is spec-first per INV-1: register any new codec id +
+magic in FORMAT.md section 2 before shipping a writer for it. Nothing in the 0.1
+layout needs to change now to keep that door open; it is already open.
+
 ---
 
 ## 2. Version indexing
@@ -514,10 +555,13 @@ mere alias of extract.
 
 ```
 walrus add <archive> <files-to-add...> [--generations <n>] [-R | --recurse]   # canonical
+walrus add <archive> - --name <stored-name> [--generations <n>]                # from stdin (5.4e)
 walrus <archive> <files-to-add...> -a                                          # alias
 ```
 
 - `files-to-add` may be a list of names/paths, including wildcards.
+- A single `-` operand reads the content from STDIN instead of a file and
+  REQUIRES `--name <stored-name>` to supply the archive name (section 5.4e).
 - For each file: it becomes the new current version; a diff against the archive's
   existing current version is computed and the change log updated.
 - Works whether or not the file already exists in the archive. If it does not
@@ -574,9 +618,13 @@ rejected as binary per section 2.2.2 / the `BinaryInput` error.)
 
 ```
 walrus update <archive> <files-to-update...> [--generations <n>] [-R | --recurse]   # canonical
+walrus update <archive> - --name <stored-name> [--generations <n>]                   # from stdin (5.4e)
 walrus <archive> <files-to-update...> -u                                             # alias
 ```
 
+- A single `-` operand reads the content from STDIN instead of a file and
+  REQUIRES `--name <stored-name>` to name the target (section 5.4e); the named
+  file must already be tracked or the command fails RC 8, as for any `update`.
 - If the file EXISTS in the archive: it becomes the new current version; a diff
   against the current version is computed and the change log updated.
 - If the file DOES NOT exist: report that it must be added instead; fail RC 8
@@ -789,6 +837,65 @@ OPEN (ergonomics, not blocking): an explicit extract rename flag `--as <name>`
 `cat`) to restore that one file under a given name WITH attribute restoration and
 `-o`/`--force` -- the capability `cat` cannot provide. Deferred unless real use
 demands it; `cat`-with-redirect covers single-file rename in the meantime.
+
+### 5.4e Reading content from stdin (`-` + `--name`) -- DECIDED
+
+`add` and `update` take file-path arguments and derive each tracked file's
+archive `name` from its path (section 5.4b/5.4c). A piped stream has no path, so
+stdin ingestion needs an explicit source marker and an explicit name. This
+matches the universal Unix convention (`tar`, `cat`, `curl -T -`) and reuses the
+existing POSIX `-` idiom and `--` option terminator (section 4); it adds no
+format change (INV-1) and no new library primitive -- the buffered bytes funnel
+through the same `Archive::add` / `Archive::update` path as a file argument.
+
+- SOURCE MARKER `-`: a single `-` in the file-operand position means "read the
+  content from STDIN". The CLI reads stdin to EOF into a buffer, then proceeds
+  exactly as if that buffer were a file's bytes.
+
+      some-command | walrus add    <archive> - --name notes.txt
+      some-command | walrus update <archive> - --name notes.txt
+
+- `--name <stored-name>` IS REQUIRED WITH `-`. There is no path to derive from,
+  and the archive is multi-file, so every tracked file needs a name. A `-` source
+  WITHOUT `--name` is a usage error (RC 2). The value becomes the manifest `name`
+  VERBATIM: it uses `/` as its only separator (section 5.4c), and is subject to
+  the same path-escaping and reserved-name rules that govern any stored name
+  (section 5.4d) -- an escaping or illegal `--name` is refused RC 2.
+  (`--name` is meaningful ONLY with a `-` source; supplying it alongside file
+  arguments is a usage error, RC 2.)
+
+- EXACTLY ONE STREAM. stdin is a single stream: `-` may appear at most once, and
+  `-` may NOT be mixed with file-path arguments in the same invocation (RC 2).
+  `-R` / `--recurse` is meaningless with `-` (there is no directory to walk) and
+  is a usage error (RC 2).
+
+- TEXT-ONLY, SAME AS A FILE. The buffered stdin bytes are subject to the
+  text-only rule (section 2.2.2): non-text / invalid-UTF-8 / NUL-bearing input is
+  rejected with the `BinaryInput` error, exactly as a binary file argument would
+  be. The 0.1 CLI is UTF-8-only (no `--encoding`, section 5.3), so a non-UTF-8
+  stream is rejected; piping arbitrary binary (e.g. `tar c | walrus add`) is not
+  supported in 0.1 by design.
+
+- DIRECTION / GENERATIONS / TRANSACTIONS UNCHANGED. `--generations <n>` and the
+  create-time direction flags (`--wal`/`--wbl`/`--direction`, section 5.3) apply
+  to a stdin `add` identically to a file `add`; the write is transactional
+  (section 5.4a). `update` from stdin obeys the same "must add first" rule
+  (RC 8, section 5.4) when `--name` is not already tracked.
+
+- NO-CHANGE SAVE. A stdin stream byte-identical to the named file's current
+  version is the success no-op of section 5.4 (RC 0, stderr note, no new
+  version), exactly as for a file argument.
+
+RATIONALE: the only genuinely new decisions are the source marker and the
+name -- everything else reuses existing, already-decided machinery. Requiring
+`--name` (rather than inventing a default like `stdin` or deriving one from a
+`/dev/fd` path) keeps the behaviour identical and predictable on every platform,
+including extension-blind and `/dev`-less systems.
+
+OPEN (ergonomics, not blocking 0.1): making `--name` OPTIONAL when the invoking
+shell exposes the source through process substitution or `/dev/fd` (so a name
+could be inferred) -- platform-specific and deferred; 0.1 always requires
+`--name` with `-`.
 
 ### 5.5 Remove (new)
 

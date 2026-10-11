@@ -71,15 +71,55 @@ management operations); `walx` is the extract-only companion.
 
 A Walrus archive is a **compressed tar archive**.
 
-- The outer layer is **zstd** compression (default, codec id `zstd`). An
-  implementation MAY support `gzip` as an alternative outer layer; the codec is
-  identified by the archive's magic bytes, NOT by the file extension.
+- The outer layer is a **compression codec**, identified by the archive's magic
+  bytes, NOT by the file extension (see the codec table below).
 - The inner layer is an uncompressed **tar** archive (ustar) containing a
   top-level manifest plus one directory per tracked file.
 
-A reader MUST sniff the outer codec from magic bytes:
-- zstd: `0x28 0xB5 0x2F 0xFD`
-- gzip: `0x1F 0x8B`
+#### Codec in 0.1 -- zstd only
+
+In spec version **0.1 the one defined codec is `zstd`**, and a conforming 0.1
+WRITER MUST emit `zstd`. The compression LEVEL is a writer-internal choice that
+does NOT affect the format: level is not recorded in the archive and a reader
+never needs it (zstd self-describes what it needs to decompress). The reference
+writer uses a fixed level; see CLI-DESIGN section 1.4.
+
+A 0.1 READER MUST recognise the codec from magic bytes:
+
+| Codec  | Magic bytes            | 0.1 reader support                         |
+|--------|------------------------|--------------------------------------------|
+| `zstd` | `0x28 0xB5 0x2F 0xFD`  | REQUIRED (read + write)                    |
+| `gzip` | `0x1F 0x8B`            | RESERVED -- magic recognised, decode optional |
+
+`gzip` is RESERVED, not required: its magic is listed so a reader IDENTIFIES a
+gzip container (rather than mis-reporting it as unknown) and MAY decode it, but a
+0.1 reader is NOT required to decode gzip and no 0.1 writer emits it. The
+reference implementation recognises gzip magic and returns a clear "not supported
+by this build" error rather than attempting to decode it.
+
+A reader that encounters bytes matching NO known codec magic MUST reject the
+archive with an unrecognised-codec error. It MUST NOT guess from the extension.
+
+#### Adding a codec later is additive and backward-compatible
+
+The codec layer is intentionally decoupled from everything above it, so a future
+spec version can add a codec (e.g. activate `gzip`, or add `xz`/`lz4`/`brotli`)
+WITHOUT a format break:
+
+- The inner tar -- `manifest.json`, every `base`, every `.wchg` -- is identical
+  regardless of outer codec, so reconstruction (section 5) and the byte-identical
+  guarantee are unaffected by the codec choice.
+- A reader detects a new codec by its magic bytes; a reader that predates the
+  codec fails CLOSED with the unrecognised-codec error (it never silently
+  mis-reads), which is forward-incompatibility, not corruption.
+- No extension change is needed: a new-codec archive still ends in `.wal` /
+  `.wbl`, because the extension never encoded the codec.
+
+Adding a codec is therefore a backward-compatible extension (old archives keep
+reading); only OLD readers facing a NEW-codec archive are affected, and they
+degrade safely to a typed error. Any such addition is still spec-first (INV-1):
+register the codec id and magic in a future FORMAT.md revision before shipping a
+writer for it.
 
 The file extension (`.wal` / `.wbl`) is a CONVENTIONAL hint for the archive's
 default direction (section 3), not the compression codec and not a per-file
