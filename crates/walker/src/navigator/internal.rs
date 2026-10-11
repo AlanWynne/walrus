@@ -48,24 +48,32 @@ pub fn internal_pane(
         // The row carries a stable egui id derived from the file id so a
         // headless harness (and ctrl-click bookkeeping) can target it; the
         // label text is also unique per file for accessibility-tree queries.
-        let response = ui
+        let (response, history_clicked) = ui
             .push_id(("nav-file", file.id()), |ui| {
                 ui.horizontal(|ui| {
                     // Non-interactive advisory tag: coloured band name before
                     // the selectable label. Exact shade is a MANUAL check; the
                     // text carries the band for the headless harness.
                     ui.colored_label(bloat::band_color(band), bloat::band_label(band));
-                    ui.selectable_label(selected, label)
+                    let selected = ui.selectable_label(selected, label);
+                    // FR-K9: a per-row "History" action opens the change-log
+                    // viewer for this file without rebinding the active timeline.
+                    let history = ui.button("History").clicked();
+                    (selected, history)
                 })
                 .inner
             })
-            .inner
-            .on_hover_text(bloat::tooltip_text(
-                info.index_size,
-                info.log_bytes,
-                info.size_bytes,
-                band,
-            ));
+            .inner;
+        let response = response.on_hover_text(bloat::tooltip_text(
+            info.index_size,
+            info.log_bytes,
+            info.size_bytes,
+            band,
+        ));
+
+        if history_clicked {
+            action.history_for = Some(file.clone());
+        }
 
         if response.clicked() {
             if ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {

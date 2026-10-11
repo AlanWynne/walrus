@@ -15,7 +15,7 @@
 use anyhow::{Context, Result};
 use walrus_fmt::{Archive, FileId, Version};
 
-use super::{FileInfo, FileRef, HistorySource, VersionId, VersionMeta};
+use super::{FileInfo, FileRef, HistoryEntry, HistorySource, VersionId, VersionMeta};
 
 // === WalrusSource =======================================================
 
@@ -85,6 +85,13 @@ impl WalrusSource {
 #[path = "walrus_import.rs"]
 mod walrus_import;
 
+// The FR-K9 `history()` mapping lives in a child module split out to keep this
+// file under the 400 non-test-line standard (NFR-1). Same `#[path]` child
+// pattern as `walrus_import`: it stays inside the one `walrus_fmt`-aware adapter
+// and may name `walrus_fmt` types (FR-K1 AC2).
+#[path = "walrus_history.rs"]
+mod walrus_history;
+
 // === HistorySource ======================================================
 
 impl HistorySource for WalrusSource {
@@ -129,6 +136,10 @@ impl HistorySource for WalrusSource {
         }
     }
 
+    fn history(&self, f: &FileRef) -> Vec<HistoryEntry> {
+        self.history_entries(f)
+    }
+
     fn file_info(&self, f: &FileRef) -> FileInfo {
         let Some(tracked) = self.tracked(f) else {
             // A stale or foreign ref yields a zeroed listing rather than panics.
@@ -160,6 +171,23 @@ impl HistorySource for WalrusSource {
 }
 
 impl WalrusSource {
+    /// The archive id string for `f`, or `None` for a stale/foreign ref.
+    /// A small owned-`String` accessor the `walrus_history` child reuses so it
+    /// never touches `file_ids` directly.
+    pub(super) fn file_id_for(&self, f: &FileRef) -> Option<String> {
+        self.file_id(f).map(|id| id.as_str().to_string())
+    }
+
+    /// The splice count (far index = original) for `f`, or `None` if foreign.
+    pub(super) fn splice_count_for(&self, f: &FileRef) -> Option<usize> {
+        self.splice_count(f.id())
+    }
+
+    /// The change records for archive id `id`, or `None` when absent.
+    pub(super) fn records_for(&self, id: &str) -> Option<&[walrus_fmt::ChangeRecord]> {
+        self.archive.records(id)
+    }
+
     /// The derived change-log byte figure for `f`: the deterministic sum of the
     /// serialized JSON byte lengths of each change record (there is no raw
     /// `log_bytes` accessor on the archive). Returns 0 when the file has no
@@ -571,5 +599,101 @@ mod tests {
         assert_eq!(parse_iso_epoch(""), None);
         assert_eq!(parse_iso_epoch("2026-10-08 12:00:00Z"), None);
         assert_eq!(parse_iso_epoch("2026-13-08T12:00:00Z"), None);
+    }
+
+    // === history (FR-K9) ================================================
+
+    use super::super::SpliceSummary;
+
+    #[test]
+    fn history_lists_one_entry_per_splice_in_index_order() {
+        // base + 2 splices -> entries for index 0 and 1 (NOT index 2 = original).
+        let records = [
+            ChangeRecord::splice(3, 0, "s"),
+            ChangeRecord::splice(0, 0, "the "),
+        ];
+        let bytes = single_forward_container("f0", "notes.txt", b"cat", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let history = source.history(&source.files()[0]);
+        let indices: Vec<usize> = history.iter().map(|e| e.index).collect();
+        assert_eq!(indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn history_entry_splice_summary_matches_the_record_op() {
+        // One splice splice(2, 1, "ab") -> index 0 carries @2 -1 +2 (byte len).
+        let records = [ChangeRecord::splice(2, 1, "ab")];
+        let bytes = single_forward_container("f0", "doc.txt", b"hiya", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let history = source.history(&source.files()[0]);
+        assert_eq!(
+            history[0].splice,
+            SpliceSummary {
+                at: 2,
+                deleted_len: 1,
+                inserted_len: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn history_entry_timestamp_comes_from_the_record_ts() {
+        let mut with_ts = ChangeRecord::splice(0, 0, "x");
+        with_ts.ts = Some("1970-01-01T00:00:00Z".to_string());
+        let bytes = single_forward_container("f0", "doc.txt", b"", &[with_ts]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(source.history(&source.files()[0])[0].timestamp, Some(0));
+
+        // A record with no ts yields None.
+        let no_ts = ChangeRecord::splice(0, 0, "x");
+        let bytes = single_forward_container("f0", "doc.txt", b"", &[no_ts]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(source.history(&source.files()[0])[0].timestamp, None);
+    }
+
+    #[test]
+    fn history_entry_note_is_surfaced_when_present() {
+        let mut with_note = ChangeRecord::splice(0, 0, "x");
+        with_note.note = Some("tidy up".to_string());
+        let bytes = single_forward_container("f0", "doc.txt", b"", &[with_note]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(
+            source.history(&source.files()[0])[0].note,
+            Some("tidy up".to_string())
+        );
+
+        let no_note = ChangeRecord::splice(0, 0, "x");
+        let bytes = single_forward_container("f0", "doc.txt", b"", &[no_note]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(source.history(&source.files()[0])[0].note, None);
+    }
+
+    #[test]
+    fn history_skips_checkpoint_records() {
+        // A checkpoint among splices does not add an entry: 2 splices -> 2
+        // entries regardless of the interleaved checkpoint line.
+        let records = [
+            ChangeRecord::splice(0, 0, "a"),
+            ChangeRecord {
+                op: walrus_fmt::Op::Checkpoint {
+                    index: 1,
+                    sha256: "0".repeat(64),
+                },
+                ts: None,
+                note: None,
+            },
+            ChangeRecord::splice(1, 0, "b"),
+        ];
+        let bytes = single_forward_container("f0", "doc.txt", b"", &records);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(source.history(&source.files()[0]).len(), 2);
+    }
+
+    #[test]
+    fn history_for_an_unknown_ref_is_empty() {
+        let bytes = single_forward_container("f0", "doc.txt", b"hi", &[]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        let foreign = FileRef::new(99, "ghost.txt");
+        assert!(source.history(&foreign).is_empty());
     }
 }

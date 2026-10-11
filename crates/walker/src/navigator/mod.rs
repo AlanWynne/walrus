@@ -106,6 +106,10 @@ pub struct NavigatorAction {
     /// A human-readable error from reading the picked import file, if the pick
     /// failed before resolution.
     pub import_error: Option<String>,
+    /// The file whose history the app should show this frame (FR-K9), set when
+    /// a row's "History" button was clicked. Purely additive, mirrors
+    /// `activated`.
+    pub history_for: Option<FileRef>,
 }
 
 /// Lay out both navigator panes: the internal file list (top) and the external

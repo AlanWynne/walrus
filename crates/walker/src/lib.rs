@@ -8,6 +8,7 @@
 pub mod app;
 pub mod chrome;
 pub mod export_ui;
+pub mod history_view;
 pub mod import;
 pub mod navigator;
 pub mod player;

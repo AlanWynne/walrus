@@ -65,6 +65,41 @@ pub struct FileInfo {
     pub mime: String,
 }
 
+/// A one-record summary of a splice in a file's change log (FR-K9).
+///
+/// Plain walker-side value carrying NO `walrus_fmt` types, so the FR-K1 AC2
+/// boundary (no archive types outside `source/walrus.rs`) holds. All lengths are
+/// byte counts: `at` is the byte offset the splice applied at, `deleted_len` the
+/// bytes removed there, `inserted_len` the bytes inserted after deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpliceSummary {
+    /// Byte offset the splice applied at.
+    pub at: usize,
+    /// Number of bytes removed at `at`.
+    pub deleted_len: usize,
+    /// Number of bytes inserted at `at` after deletion.
+    pub inserted_len: usize,
+}
+
+/// One change-log entry surfaced to the FR-K9 history viewer.
+///
+/// A plain walker-side value (NO `walrus_fmt` types), produced by
+/// [`HistorySource::history`]. Entries are listed in version-index order (0 =
+/// current, higher = older) to match the viewer's listing; checkpoints are not
+/// entries (only splices mutate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// The version index this record PRODUCED (0 = current, higher = older),
+    /// matching [`VersionId::Index`] semantics and the viewer's listing order.
+    pub index: usize,
+    /// Epoch-seconds timestamp parsed from the record's `ts`, when present.
+    pub timestamp: Option<i64>,
+    /// The record's free-form note, when present.
+    pub note: Option<String>,
+    /// The splice at/deleted_len/inserted_len summary.
+    pub splice: SpliceSummary,
+}
+
 /// Identifies a tracked file within an archive.
 ///
 /// A `FileRef` carries the minimal data needed to look a file up in its source
@@ -128,6 +163,18 @@ pub trait HistorySource {
     /// with an empty mime rather than an error (listings must not panic on a
     /// bad ref).
     fn file_info(&self, f: &FileRef) -> FileInfo;
+
+    /// The change-log history of `f` for the FR-K9 history viewer.
+    ///
+    /// Entries are returned in VERSION-INDEX order (index 0 = current FIRST,
+    /// then increasing index = older), matching the order `versions` lists and
+    /// the viewer renders. Only mutating splices become entries; checkpoint
+    /// records (which produce no version step) are SKIPPED. Each entry carries
+    /// the index it produced, the record's timestamp and note when present
+    /// (`None` otherwise), and a [`SpliceSummary`]. A stale or foreign `f`
+    /// yields an EMPTY `Vec` rather than an error (the viewer must not panic on
+    /// a bad ref).
+    fn history(&self, f: &FileRef) -> Vec<HistoryEntry>;
 }
 
 // === Test support ===================================================
@@ -139,7 +186,10 @@ pub trait HistorySource {
 /// a live archive. It is NOT part of the shipped product surface -- only the
 /// test tree constructs it.
 pub mod testsupport {
-    use super::{FileInfo, FileRef, HistorySource, Result, VersionId, VersionMeta};
+    use super::{
+        FileInfo, FileRef, HistoryEntry, HistorySource, Result, SpliceSummary, VersionId,
+        VersionMeta,
+    };
 
     /// A single canned file: its reference, a mime hint, and ordered versions.
     struct Entry {
@@ -282,6 +332,35 @@ pub mod testsupport {
                 },
             }
         }
+
+        // SYNTHESIS RULE (deterministic, documented): the in-memory source has
+        // no real change log, so `history()` synthesises one entry per
+        // non-current version slot. For a file with N versions it produces N-1
+        // entries, one for each version index 0..N-1 (the final slot N-1 is the
+        // oldest, treated as the original base and so produces no entry). Each
+        // entry's splice summary is derived from adjacent byte lengths: at = 0,
+        // deleted_len = versions[index + 1].len() (the older bytes it replaced),
+        // inserted_len = versions[index].len() (the bytes it produced). Timestamp
+        // and note are always None (the canned source carries neither). The only
+        // contract is determinism and that tests assert the exact vec.
+        fn history(&self, f: &FileRef) -> Vec<HistoryEntry> {
+            let Some(entry) = self.lookup(f) else {
+                return Vec::new();
+            };
+            let versions = &entry.versions;
+            (0..versions.len().saturating_sub(1))
+                .map(|index| HistoryEntry {
+                    index,
+                    timestamp: None,
+                    note: None,
+                    splice: SpliceSummary {
+                        at: 0,
+                        deleted_len: versions[index + 1].len(),
+                        inserted_len: versions[index].len(),
+                    },
+                })
+                .collect()
+        }
     }
 }
 
@@ -418,6 +497,29 @@ mod tests {
                     mime: String::new(),
                 },
             }
+        }
+
+        // Same deterministic synthesis rule as `InMemorySource::history`: one
+        // entry per non-current version slot, timestamp/note carried from the
+        // canned `VersionMeta` when present (FakeSource DOES hold metadata), the
+        // splice summary derived from adjacent byte lengths.
+        fn history(&self, f: &FileRef) -> Vec<HistoryEntry> {
+            let Some(file) = self.lookup(f) else {
+                return Vec::new();
+            };
+            let versions = &file.versions;
+            (0..versions.len().saturating_sub(1))
+                .map(|index| HistoryEntry {
+                    index,
+                    timestamp: versions[index].meta.timestamp,
+                    note: None,
+                    splice: SpliceSummary {
+                        at: 0,
+                        deleted_len: versions[index + 1].bytes.len(),
+                        inserted_len: versions[index].bytes.len(),
+                    },
+                })
+                .collect()
         }
     }
 
@@ -588,5 +690,88 @@ mod tests {
         let data = source.file_named("data.csv");
         assert_eq!(source.file_info(&data).mime, "text/csv");
         assert_eq!(source.file_info(&data).generations, None);
+    }
+
+    // === history (FR-K9) ================================================
+
+    #[test]
+    fn fake_history_synthesizes_one_entry_per_non_current_version_in_index_order() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0]; // two versions -> exactly one entry.
+        let history = source.history(readme);
+        let indices: Vec<usize> = history.iter().map(|e| e.index).collect();
+        assert_eq!(
+            indices,
+            vec![0],
+            "one entry at index 0 for a 2-version file"
+        );
+    }
+
+    #[test]
+    fn fake_history_splice_summary_is_derived_from_adjacent_version_lengths() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0];
+        // Slot 0 "current readme" (14), slot 1 "older readme" (12).
+        let history = source.history(readme);
+        assert_eq!(
+            history[0].splice,
+            SpliceSummary {
+                at: 0,
+                deleted_len: "older readme".len(),
+                inserted_len: "current readme".len(),
+            }
+        );
+    }
+
+    #[test]
+    fn fake_history_carries_the_producing_versions_timestamp() {
+        let source = FakeSource::sample();
+        let readme = &source.files()[0];
+        // Slot 0's canned metadata carries timestamp Some(300).
+        let history = source.history(readme);
+        assert_eq!(history[0].timestamp, Some(300));
+        assert_eq!(history[0].note, None);
+    }
+
+    #[test]
+    fn fake_history_for_a_single_version_file_is_empty() {
+        let source = FakeSource::sample();
+        let data = &source.files()[1]; // one version -> no entries.
+        assert!(source.history(data).is_empty());
+    }
+
+    #[test]
+    fn fake_history_for_an_unknown_ref_is_empty() {
+        let source = FakeSource::sample();
+        let foreign = FileRef::new(99, "ghost.txt");
+        assert!(source.history(&foreign).is_empty());
+    }
+
+    #[test]
+    fn in_memory_history_synthesizes_one_entry_per_non_current_version() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let readme = source.file_named("README.md"); // two versions -> one entry.
+        let history = source.history(&readme);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].index, 0);
+        assert_eq!(history[0].timestamp, None);
+        assert_eq!(history[0].note, None);
+        assert_eq!(
+            history[0].splice,
+            SpliceSummary {
+                at: 0,
+                deleted_len: "# Older\n\nolder readme".len(),
+                inserted_len: "# Current\n\ncurrent readme".len(),
+            }
+        );
+    }
+
+    #[test]
+    fn in_memory_history_for_a_single_version_file_is_empty() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let data = source.file_named("data.csv"); // one version.
+        assert!(source.history(&data).is_empty());
     }
 }

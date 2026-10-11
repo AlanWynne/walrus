@@ -56,6 +56,8 @@ pub struct WalkerApp {
     theme_mode: ThemeMode,
     /// Whether the theme has been applied to the context yet.
     theme_applied: bool,
+    /// The file whose FR-K9 history view is currently open, if any.
+    history_file: Option<crate::source::FileRef>,
 }
 
 impl Default for WalkerApp {
@@ -72,6 +74,7 @@ impl Default for WalkerApp {
             speed: 1.0,
             theme_mode: ThemeMode::default(),
             theme_applied: false,
+            history_file: None,
         }
     }
 }
@@ -212,6 +215,30 @@ impl WalkerApp {
         }
     }
 
+    /// Render the FR-K9 history view for the open file, if any, and run the
+    /// `rfd` save when the panel yields an export intent.
+    ///
+    /// The panel reads through the format-agnostic seam; only the save dialog
+    /// touches the OS. A no-op when no history file is open or no source is
+    /// loaded.
+    fn show_history_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(file) = self.history_file.clone() else {
+            return;
+        };
+        let Some(source) = self.source.as_ref() else {
+            return;
+        };
+        let source = source as &dyn HistorySource;
+        let mut export_markdown = None;
+        egui::Panel::right("history").show(ui, |ui| {
+            let action = crate::history_view::history_panel(ui, source, &file);
+            export_markdown = action.export_markdown;
+        });
+        if let Some(markdown) = export_markdown {
+            self.status = save_history_report(&file, &markdown);
+        }
+    }
+
     /// Build the export context for the chrome menu, if a file is loaded.
     fn export_context(&self) -> Option<(Vec<walrus_fmt::export::ExportFormat>, String, String)> {
         let player = self.player.as_ref()?;
@@ -228,6 +255,28 @@ fn navigator_renderer(source: &dyn HistorySource, navigator: &NavigatorState) ->
     match navigator.active() {
         Some(active) => view::present::select_renderer_for(source, active),
         None => Renderer::Text,
+    }
+}
+
+/// Open the native save dialog and write the FR-K9 Markdown history report,
+/// returning a status string (success/cancel/error) -- same pattern as
+/// `export_ui::run_export`.
+///
+/// MANUAL: the `rfd` save dialog is a real OS dialog a headless harness cannot
+/// drive; the report STRING is produced and tested by `history_view`.
+fn save_history_report(file: &crate::source::FileRef, markdown: &str) -> String {
+    let stem = file
+        .name()
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(file.name());
+    let suggested = format!("{stem}-history.md");
+    let Some(path) = rfd::FileDialog::new().set_file_name(&suggested).save_file() else {
+        return "History export cancelled.".to_string();
+    };
+    match std::fs::write(&path, markdown.as_bytes()) {
+        Ok(()) => format!("Exported history report to {}", path.display()),
+        Err(e) => format!("History export write failed: {e}"),
     }
 }
 
@@ -303,6 +352,7 @@ impl eframe::App for WalkerApp {
             let mut activated = None;
             let mut import_outcome = None;
             let mut import_error = None;
+            let mut history_for = None;
             let picker = RfdPicker;
             egui::Panel::left("navigator").show(ui, |ui| {
                 let source = self.source.as_ref().expect("source is Some") as &dyn HistorySource;
@@ -311,7 +361,12 @@ impl eframe::App for WalkerApp {
                 activated = action.activated;
                 import_outcome = action.import;
                 import_error = action.import_error;
+                history_for = action.history_for;
             });
+            if let Some(file) = history_for {
+                // FR-K9: open the per-file history view for the clicked file.
+                self.history_file = Some(file);
+            }
             if let Some(message) = import_error {
                 self.status = message;
             }
@@ -333,6 +388,11 @@ impl eframe::App for WalkerApp {
                 }
             }
         }
+
+        // FR-K9 history view: a right panel listing the open file's change log
+        // with a Markdown-report export. Rendered only when a file's history was
+        // requested and a source is loaded.
+        self.show_history_panel(ui);
 
         // Bottom status bar.
         let variant = self.variant_str();

@@ -375,3 +375,74 @@ fn content_hint_returns_the_tracked_mime_and_name() {
     assert_eq!(name, "data.csv");
     assert_eq!(mime, "text/plain");
 }
+
+// === history (FR-K9) =====================================================
+
+#[test]
+fn history_lists_entries_in_index_order_for_wal() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let fixtures = wal_fixtures();
+    let bytes = build_container(&wal_manifest(&fixtures), &fixtures);
+    let path = write_fixture(dir.path(), "fixture.wal", &bytes);
+
+    let source = WalrusSource::open(&path).expect("open .wal fixture");
+    let notes = &source.files()[0]; // "notes.txt": base "cat" + 2 splices.
+
+    let history = source.history(notes);
+    let indices: Vec<usize> = history.iter().map(|e| e.index).collect();
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "two splices -> entries at index 0 and 1"
+    );
+
+    // The forward log is [splice(3,0,"s"), splice(0,0,"the ")], oldest step
+    // first. Version index 0 (current) is produced by the LAST splice ordinal
+    // (count - 0 = 2) = splice(0,0,"the "); index 1 by ordinal 1 =
+    // splice(3,0,"s").
+    assert_eq!(
+        history[0].splice,
+        walker::source::SpliceSummary {
+            at: 0,
+            deleted_len: 0,
+            inserted_len: 4, // "the "
+        }
+    );
+    assert_eq!(
+        history[1].splice,
+        walker::source::SpliceSummary {
+            at: 3,
+            deleted_len: 0,
+            inserted_len: 1, // "s"
+        }
+    );
+}
+
+#[test]
+fn history_is_consistent_with_versions_for_both_variants() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+
+    let wal = wal_fixtures();
+    let wal_bytes = build_container(&wal_manifest(&wal), &wal);
+    let wal_path = write_fixture(dir.path(), "x.wal", &wal_bytes);
+    let wal_source = WalrusSource::open(&wal_path).expect("open .wal");
+
+    let wbl = wbl_fixtures();
+    let wbl_bytes = build_container(&wbl_manifest(&wbl), &wbl);
+    let wbl_path = write_fixture(dir.path(), "x.wbl", &wbl_bytes);
+    let wbl_source = WalrusSource::open(&wbl_path).expect("open .wbl");
+
+    // Every version except the original base is produced by one splice, so the
+    // entry COUNT equals versions - 1 for BOTH variants. The splice NUMBERS
+    // differ across variants (the .wbl log stores the inverse records), so this
+    // asserts only the count symmetry, not byte-identical summaries.
+    for source in [&wal_source, &wbl_source] {
+        for file in source.files() {
+            assert_eq!(
+                source.history(&file).len(),
+                source.versions(&file).len() - 1,
+                "one history entry per non-original version"
+            );
+        }
+    }
+}

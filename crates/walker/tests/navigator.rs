@@ -240,3 +240,44 @@ fn multi_select_of_two_files_enables_the_batch_action_button() {
         "the batch button label reflects two selected files"
     );
 }
+
+/// FR-K9: clicking a row's "History" button sets `history_for` in the frame's
+/// `NavigatorAction` naming that file, so the app can open the history view.
+/// The captured action is threaded through a shared cell, as the model-binding
+/// tests capture the active ref.
+#[test]
+fn clicking_the_history_action_sets_history_for_in_the_action() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let source = InMemorySource::sample();
+    let captured: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let sink = Rc::clone(&captured);
+
+    let state = NavigatorState::default();
+    let mut import = ImportState::default();
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut NavigatorState| {
+            let action = navigator::panels(ui, &source, &NoPicker, &mut import, state);
+            if let Some(file) = action.history_for {
+                *sink.borrow_mut() = Some(file.name().to_string());
+            }
+        },
+        state,
+    );
+    harness.run();
+
+    // Each row has its own "History" button, so the label repeats; click the
+    // FIRST through query_all and run a frame to process the click.
+    harness
+        .query_all_by_label("History")
+        .next()
+        .expect("at least one History button")
+        .click();
+    harness.run();
+
+    assert!(
+        captured.borrow().is_some(),
+        "clicking a History button sets history_for in the action"
+    );
+}
