@@ -448,11 +448,34 @@ walrus <archive> [file-mask] -x                              # alias
   their stored names, recreating any relative path from the manifest and
   restoring recorded attributes.
 - `file-mask` optional: omitted -> ALL tracked files; wildcards select a subset.
-- `--index <n>` optional, applies to every selected file:
-  - omitted -> index 0 (current version).
-  - a valid number -> that version.
-  - greater than a file's last recorded index -> the ORIGINAL version is written
-    for that file, with a WARNING, and the command exits RC 4.
+- VERSION SELECTOR (optional, applies to EVERY selected file, resolved PER FILE
+  against that file's own `[0, count]` range -- see FORMAT.md section 5). The
+  selectors below mirror the library `Version` enum (FR-W3) so the CLI is as
+  expressive as the engine beneath it. At most one selector may be given
+  (supplying two is RC 2):
+  - omitted (or `--version current`) -> index 0, the CURRENT version. Default.
+  - `--version original` -> each file's OLDEST version (its own `count`). This is
+    how you extract the oldest version of EVERY file at once; because it resolves
+    per file it is correct for a mixed-history archive, and it is a clean success
+    (RC 0, no warning) -- unlike a numeric index past the end.
+  - `--index <n>` -> that numeric index for every file. Greater than a file's
+    last recorded index -> the ORIGINAL is written for THAT file with a WARNING,
+    and the command exits RC 4 (the clamp-and-warn safety fallback; it applies
+    only to an out-of-range NUMERIC index, never to `original`/`current`/`--at`).
+  - `--version <+/-n>` -> RELATIVE to current (e.g. `-1` = one older than
+    current), clamped into the file's range.
+  - `--at <T>` -> SNAPSHOT AT A TIMESTAMP. For each file, the version whose change
+    record is the newest at-or-before `T`; a `T` before a file's earliest record
+    resolves to that file's current version (index 0). `T` is a UTC ISO-8601
+    instant in the fixed shape `YYYY-MM-DDThh:mm:ssZ` (the trailing `Z` is
+    required; see the UTC rule below). This reconstructs the whole archive as it
+    stood at an instant -- a point-in-time snapshot across all files.
+  - `--label <name>` -- resolve by a file's checkpoint label (FORMAT.md 5.2).
+    OPEN (deferred past 0.1): checkpoint labels are a thinner, less-exercised
+    path; `--label` ships once checkpoint authoring is exposed. `--at`,
+    `original`, `current`, numeric, and relative all ship in 0.1.
+  `--index <n>` is retained as the explicit numeric spelling; `--version` accepts
+  `current` / `original` / a signed relative integer; `--at` is its own flag.
 - `-o` / `--output <dir>`: destination directory. DEFAULT is the current working
   directory. Stored relative paths are recreated beneath it.
 - DECIDED (overwrite safety): if a target path ALREADY EXISTS, extract REFUSES
@@ -462,7 +485,7 @@ walrus <archive> [file-mask] -x                              # alias
 #### 5.2.2 `cat` -- write ONE file's bytes to stdout
 
 ```
-walrus cat <archive> <file> [--index <n>]
+walrus cat <archive> <file> [--index <n> | --version <current|original|+/-n> | --at <T>]
 ```
 
 - The `cat` (Linux) / `type` (Windows) analogue: reconstructs ONE tracked file at
@@ -470,8 +493,11 @@ walrus cat <archive> <file> [--index <n>]
   redirects it wherever they want. This is what the old `extract` did.
 - Exactly ONE tracked file must be selected (not a multi-match mask); selecting
   zero or more than one is a usage error (RC 2).
-- `--index <n>` as in extract (omitted -> current; beyond-last -> original + warn
-  + RC 4).
+- VERSION SELECTOR: the SAME selector set as extract (section 5.2.1) --
+  `--index <n>`, `--version current|original|<+/-n>`, and `--at <T>` (UTC
+  snapshot), resolved against the single selected file's range; omitted ->
+  current; a numeric index beyond-last -> original + warning + RC 4; `--label`
+  deferred as in extract. At most one selector (two is RC 2).
 - No `-o`, no `--force`: `cat` never touches disk. Redirection is the user's job:
   `walrus cat a.wal notes.txt > just-this.txt` or `walrus cat a.wal notes.txt |
   grep TODO`.
@@ -890,6 +916,33 @@ self-describing when extracted standalone:
   capability (consumed by Walker's history viewer, section 6b.6). No `walrus` or
   `walx` subcommand operates on a bare `.wchg`; the CLI always works on a whole
   `.wal`/`.wbl` archive. This omission is intentional, not a gap.
+
+### Record timestamps are UTC -- DECIDED
+
+Each change record carries an optional `ts` field (FORMAT.md 4.1). When present
+it is a UTC ISO-8601 instant in the FIXED shape `YYYY-MM-DDThh:mm:ssZ` -- the
+trailing `Z` (Zulu / UTC) is REQUIRED. Rationale and rules:
+
+- STORE UTC, NEVER LOCAL TIME. UTC is unambiguous and totally ordered; local time
+  is not (it repeats an hour across a DST fall-back and is meaningless once an
+  archive moves between machines or timezones). The `--at <T>` snapshot selector
+  (section 5.2.1) needs a monotonic order to resolve "the version as at T", which
+  only UTC provides. The library's timestamp parser accepts ONLY this fixed `...Z`
+  shape and rejects any offset or local-time string, so a non-UTC `ts` would
+  silently fail timestamp addressing -- another reason the writer must emit UTC.
+- `walrus add` / `update` STAMP EACH SAVE. When the CLI records a new version it
+  sets that record's `ts` to the save instant formatted as UTC
+  `YYYY-MM-DDThh:mm:ssZ` (seconds resolution), so `--at` works on CLI-produced
+  archives. A record with no `ts` is simply skipped by `--at` matching (an
+  archive whose writer did not stamp records supports `--index`/`--version` but
+  not meaningful `--at`).
+- DISPLAY IS SEPARATE. The stored and COMPARED value is always UTC; a UI (Walker,
+  or a future `walrus log`) MAY render timestamps in the viewer's local time for
+  humans, but never stores or addresses by local time. (Same convention as git:
+  an absolute instant is stored; tools display local.)
+- DETERMINISM NOTE: fixtures and tests must use FIXED timestamp strings, not the
+  wall clock, per the testing steering -- only the live `add`/`update` path reads
+  the real clock.
 
 ---
 

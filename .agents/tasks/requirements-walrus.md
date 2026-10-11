@@ -227,6 +227,15 @@ from `walx`.
   warning and exits RC 4.
 - AC3 `cat` requires exactly one matched file (RC 2 otherwise); writes raw bytes
   to stdout; never touches disk.
+- AC4 `extract` and `cat` accept the version selectors `--version current`
+  (default, index 0), `--version original` (each file's oldest -- resolves PER
+  FILE, RC 0 no warning), `--index <n>` (numeric; beyond-last -> original + warn
+  + RC 4 per AC2), `--version <+/-n>` (relative), and `--at <T>` (UTC-timestamp
+  snapshot: per file, the version whose record is newest at-or-before `T`; `T`
+  before a file's earliest record -> that file's current). Each selector resolves
+  per file against that file's own `[0, count]` via the library `Version` enum
+  (FR-W3); supplying two selectors is RC 2. `--label` is deferred (OPEN). `--at`
+  requires `T` in the fixed UTC shape `YYYY-MM-DDThh:mm:ssZ`.
 
 ### FR-W11 `walrus` CLI (new binary)
 New `crates/walrus-cli` (binary `walrus`), subcommand canonical with GNU/POSIX
@@ -252,6 +261,35 @@ table (0 ok, 2 usage, 4 index-beyond-last, 8 target-missing).
   EXISTING archive the manifest `variant` drives the default (extension not
   consulted), keeping behaviour identical on extension-blind Unix systems.
 - AC6 Subcommand behaviour verified over fixtures (not just unit tests).
+- AC7 `add` and `update` accept `-R` / `--recurse` (CLI-DESIGN section 5.4b).
+  This is a CLI-LAYER argument expansion, NOT a new library primitive: the CLI
+  walks each directory argument and calls the existing mutate API
+  (`Archive::add` / `Archive::update`) once per discovered file, passing the
+  file's path RELATIVE to the recursion root (root name included, `/`-separated
+  on every platform) as the `name`. The manifest `name` already permits `/`
+  (FR-W1), so no format change is needed; INV-1 is untouched.
+  - AC7a Without `-R`, a directory argument is a usage error (RC 2).
+  - AC7b With `-R`, `walrus add <arc> <dir> -R` stores every regular file under
+    `<dir>` as `<dir-name>/<relative-path>`; a following `walx extract` recreates
+    the identical on-disk tree (FR-W10 AC1).
+  - AC7c The walk is deterministic (entries ingested in sorted relative-path
+    order), follows regular files only (symlinks not followed; devices/sockets/
+    FIFOs skipped with a stderr note, not a batch failure), and leaves empty
+    directories unrepresented.
+  - AC7d A binary file found during the walk is rejected like any binary input
+    (FR-W6 AC3); under the batch transaction (FR-W4) that aborts the whole add/
+    update and leaves the archive byte-for-byte unchanged.
+  - AC7e `update <arc> <dir> -R` matches each recursed file by its relative name
+    against the archive; a recursed file not already tracked fails RC 8 (FR-W7
+    AC2) and, being transactional, changes nothing. (`--skip-binary` and
+    include/exclude globs are noted OPEN in CLI-DESIGN 5.4b, not required here.)
+- AC8 `add` / `update` stamp each recorded change with a UTC timestamp in the
+  fixed shape `YYYY-MM-DDThh:mm:ssZ` (the save instant, seconds resolution), so
+  `--at` snapshot addressing (FR-W10 AC4) works on CLI-produced archives.
+  Timestamps are stored and compared in UTC only, never local time; the library
+  parser accepts only the fixed `...Z` shape (FORMAT.md 4.1 / section 5). Display
+  in local time is a UI concern (Walker), never stored. Fixtures/tests use fixed
+  timestamp strings; only the live add/update path reads the wall clock.
 
 ### FR-W12 Regenerate examples + fixtures
 Update `generate_walk.rs` / `generate_story.rs` to the multi-file manifest +
@@ -287,3 +325,39 @@ When the public surface in section 1 is implemented and on `main` (or a shared
 integration branch), post the resolved API here so the WALKER stream can
 un-block its API-dependent requirements. Until then WALKER builds only the
 format-agnostic parts (shell, navigator layout, theming, `HistorySource` seam).
+
+### API READY -- 2026-10-11 (branch `feature/walrus-core`, tip 05c2975)
+
+The section-1 public API surface is IMPLEMENTED, reviewed, and verified green on
+the `feature/walrus-core` integration branch (FR-W1 through FR-W9 landed;
+FR-W10/W11/W12 -- the CLIs and example regeneration -- are still pending but do
+NOT block Walker). WALKER may now un-block its API-dependent requirements and
+build the `WalrusSource` adapter against this surface.
+
+Resolved public surface on `walrus_fmt`:
+- `Archive::open(path)` / `Archive::read(bytes)` -- read + codec-sniff.
+- `Archive::files()`, `Archive::file(sel)`, `Archive::reconstruct(&FileId, Version)`
+  -- version 0 = CURRENT for both variants; byte-identical per index (INV-3).
+- Mutate (all transactional, temp-file-then-atomic-rename):
+  `add(name, bytes, generations, dir)`, `update(name, bytes, generations)`
+  (behind the `diff` cargo feature -- it diffs old-vs-new via `similar`),
+  `update_with_splices(name, &[splices])` (ALWAYS available; forward-sense
+  splices; a reverse file inverts + advances the base), `remove(mask, force)`,
+  `set_generations(file, n)`, `condense(mask, keep)`, `enforce_generations(id)`,
+  `convert(mask, to)` (per-file direction flip; byte-identical round-trip),
+  `write(path)` / `to_bytes()`.
+- `Version { Index, Current, Original, Relative, Label, Timestamp }`,
+  `Direction { Forward, Reverse }`, `FileId`, `TrackedFile`, `WchgHeader`.
+- Typed errors: `NotTracked` (update/remove on an untracked file -- RC-8 sense),
+  `AmbiguousRemove` (multi-match without force), `SpliceNotCharBoundary`,
+  `BinaryInput`, `Rebase`, plus the existing version/checkpoint/IO variants.
+
+Feature gating (dependency boundary, INV-2): the DEFAULT build links NEITHER
+`similar` NOR `encoding_rs` and no GUI/app crate. Enable the `diff` feature for
+`update(bytes)` (text -> splices) and the `i18n` feature for the encoding
+transcode path. A playback-only embedder uses `update_with_splices` and needs
+neither. Verified via `cargo tree` default vs `--features "diff i18n"`.
+
+NOTE on location: the API is on `feature/walrus-core`, the WALRUS stream's
+integration branch; it is NOT yet merged to `main`. Walker should build against
+`feature/walrus-core` (or a branch based on it) until the stream lands on `main`.
