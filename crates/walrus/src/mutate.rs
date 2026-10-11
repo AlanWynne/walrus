@@ -494,4 +494,41 @@ mod tests {
             "a failed write leaves the on-disk archive byte-for-byte unchanged"
         );
     }
+
+    #[test]
+    fn a_failed_add_leaves_the_archive_bytes_unchanged() {
+        // The still-missing transactional case: an in-memory `add` followed by a
+        // transactional write whose fill fails mid-stream leaves the on-disk
+        // archive byte-for-byte unchanged (mirrors the condense abort test for
+        // the add mutator rather than condense).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("archive.wal");
+
+        let (base, records) = rich_forward();
+        let archive = single_file_archive("f", Direction::Forward, &base, records);
+        archive.write(&dest).expect("seed archive on disk");
+        let captured = std::fs::read(&dest).expect("read seeded archive");
+
+        // Mutate in memory with a real `add`, then attempt a transactional write
+        // that fails mid-fill after staging partial bytes to the temp file.
+        let mut mutated =
+            single_file_archive("f", Direction::Forward, &rich_forward().0, rich_forward().1);
+        mutated
+            .add("newfile.txt", b"brand new content", None, None)
+            .expect("add in memory");
+        let result = crate::atomic::write_atomically(&dest, |file| {
+            use std::io::Write;
+            file.write_all(b"PARTIAL").map_err(WalrusError::Io)?;
+            Err(WalrusError::Rebase {
+                reason: "injected mid-write failure".into(),
+            })
+        });
+
+        assert!(result.is_err(), "the injected failure must surface");
+        assert_eq!(
+            std::fs::read(&dest).expect("re-read archive"),
+            captured,
+            "a failed add+write leaves the on-disk archive byte-for-byte unchanged"
+        );
+    }
 }

@@ -20,12 +20,16 @@ mod atomic;
 mod container;
 #[cfg(feature = "diff")]
 mod diff;
+#[cfg(feature = "i18n")]
+mod encoding;
 mod error;
 mod invert;
 mod manifest;
 mod mutate;
 mod mutate_add;
 mod mutate_convert;
+#[cfg(feature = "i18n")]
+mod mutate_i18n;
 mod mutate_remove;
 mod rebase;
 mod reconstruct;
