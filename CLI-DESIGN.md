@@ -248,12 +248,13 @@ grouping, and avoids an operation hiding as a flag after positional arguments.
 
 ```
 walrus query    <archive> [file-mask] [-l]
-walrus extract  <archive> [file-mask] [--index <n>] [-o <dir>] [--force]
+walrus extract  <archive> [file-mask] [--index <n>] [-o <dir>] [--force] [--sanitize]
 walrus cat      <archive> <file>       [--index <n>]
-walrus add      <archive> <files...>
-walrus update   <archive> <files...>
+walrus add      <archive> <files...>  [--generations <n>] [--wal | --wbl | --direction <forward|reverse>] [-R]
+walrus update   <archive> <files...>  [--generations <n>] [-R]
 walrus remove   <archive> <file-mask> [--force]
 walrus condense <archive> <file-mask> [--keep <n>]
+walrus convert  <archive> [file-mask] --to <wal|wbl> [-o <name>]
 ```
 
 The flag spellings (`-x`/`--extract`, `-q`/`--query`, `-a`/`--add`, `-u`/
@@ -424,8 +425,10 @@ walrus <archive> -q
   size.
 
 DECIDED: "index size" = the COUNT of recorded versions (the highest valid index)
-for the file. The BYTE size of the inner `.wchg` log is a separate column, shown
-only in the long listing (`-l`).
+for the file. The long listing (`-l`) additionally shows a "log bytes" column
+(the byte size of the inner `.wchg` log) alongside the file attributes -- this is
+the "attributes + log bytes" the requirements call for (FR-W11 AC1), and it is
+the same `log_bytes` figure the Walker bloat indicator uses (section 6b.3).
 
 ### 5.2 Extract (restore to disk) and Cat (write to stdout)
 
@@ -504,6 +507,43 @@ walrus <archive> <files-to-add...> -a                                          #
   as the archive name (section 5.4b). Without `-R`, a directory argument is a
   usage error (RC 2).
 
+#### Direction flag `--wal` / `--wbl` / `--direction` -- DECIDED
+
+`add` accepts `--wal` / `--wbl` (equivalently `--direction <forward|reverse>`,
+where `--wal` == `--direction forward` and `--wbl` == `--direction reverse`) to
+choose a file's replay direction. Per-file direction is IMMUTABLE once a file is
+tracked (only `convert`, section 5.7, flips an existing file), so the flag only
+ever applies at CREATE time:
+
+- CREATE-ONLY OVERRIDE: the flag sets the direction for a file being CREATED by
+  this `add`. For a file ALREADY tracked in the archive, the flag is IGNORED and
+  the existing direction kept (changing it would be a `convert`, not an `add`).
+- BRAND-NEW ARCHIVE (no manifest yet) SEED ORDER for the file's direction:
+  1. the explicit flag (`--wal`/`--wbl`/`--direction`), else
+  2. the archive filename extension (`.wal` -> forward, `.wbl` -> reverse), else
+  3. the default `wal` / forward for a bare archive name with no extension.
+- EXISTING ARCHIVE: the manifest `variant` drives the default direction for a
+  newly added file; the archive filename EXTENSION is NOT consulted. This keeps
+  behaviour identical on extension-blind Unix systems, where the manifest -- not
+  the name -- is authoritative.
+
+This is the CLI realisation of FORMAT.md's rule that the archive variant seeds
+the default direction for newly added files while each file's own `.wchg`
+`direction` remains authoritative for reconstruction (section 6a).
+
+OPEN (deferred past 0.1): a source-encoding flag. FR-W8 / section 2.3 decide the
+i18n TRANSCODE behaviour (accept a declared non-UTF-8 source, transcode to UTF-8
+on `add` via `encoding_rs`, record the original encoding per file, optionally
+transcode back on `extract`), but that is a `walrus-fmt` LIBRARY capability
+behind the optional `i18n` cargo feature. The 0.1 CLI is deliberately UTF-8-only
+and does NOT expose an `--encoding <enc>` flag on `add` (nor `--encoding` /
+`--keep-original` on `extract`): adding it would pull `encoding_rs` into the CLI
+binary, which cuts against the lean-CLI dependency boundary (the same reason
+export stays Walker-only, section 4). Non-UTF-8 handling is available to Walker
+via the library today; the CLI flags are additive and can be turned on in a later
+version without a format change. (A non-UTF-8 file given to the 0.1 CLI is
+rejected as binary per section 2.2.2 / the `BinaryInput` error.)
+
 ### 5.4 Update
 
 ```
@@ -513,7 +553,8 @@ walrus <archive> <files-to-update...> -u                                        
 
 - If the file EXISTS in the archive: it becomes the new current version; a diff
   against the current version is computed and the change log updated.
-- If the file DOES NOT exist: report that it must be added instead; fail RC 8.
+- If the file DOES NOT exist: report that it must be added instead; fail RC 8
+  (the library's `NotTracked` error, section 6).
 - `--generations <n>` sets the file's generation cap (see section 2.1); omitting
   it leaves the cap unchanged.
 - If updating exceeds a file's generation cap, the oldest version(s) are
@@ -735,7 +776,9 @@ walrus <archive> <file-mask> -r [--force]         # alias
 - If no tracked file matches: fail RC 8 (consistent with update/condense).
 - DECIDED (safety): if a wildcard mask matches MORE THAN ONE file, `--force` is
   required. Without it, remove refuses, lists what would be deleted, and exits
-  RC 2. A mask matching exactly one file does not need `--force`.
+  RC 2 (the library's `AmbiguousRemove` error, section 6). A mask matching
+  exactly one file does not need `--force`. A mask matching NO file is the
+  `NotTracked` error -> RC 8.
 
 ### 5.6 Condense
 
@@ -761,19 +804,68 @@ NOTE: condense is destructive -- it discards recoverable history. This is the
 corrected definition; the earlier draft mistakenly described condense using
 update's wording.
 
+### 5.7 Convert (`.wal <-> .wbl`) -- DECIDED
+
+```
+walrus convert <archive> [file-mask] --to <wal|wbl> [-o <name>]
+```
+
+- Purpose: flip replay DIRECTION. `--to wal` makes the selected file(s) forward
+  (original base + forward log); `--to wbl` makes them reverse (current base +
+  reverse log). This changes the archive VARIANT/representation, not the content,
+  which is why it lives in the CLI and is NOT an "export" (section 4 scope
+  boundary).
+- PER-FILE FLIP IS THE PRIMITIVE. With a `file-mask`, only matching files are
+  converted; WITHOUT a mask, the WHOLE archive is converted (the no-mask case is
+  the degenerate "all files" form of the same per-file operation).
+- ROUND-TRIP GUARANTEE: convert inverts each splice and re-bases so that
+  reconstruction is BYTE-IDENTICAL for every version index before and after; a
+  forward -> reverse -> forward round-trip reproduces every index exactly
+  (FR-W7 AC4, INV-3). `count` and checkpoints are preserved.
+- MANIFEST `variant`: a WHOLE-ARCHIVE convert (no mask) MAY update the manifest
+  `variant` to the new predominant direction and re-derives `base_role` /
+  `log_direction` to match (so the manifest still validates on re-open). A MASKED
+  convert leaves the archive `variant` untouched (the archive becomes mixed, which
+  is legal -- direction is per file, section 6a).
+- EXTENSION: convert MAY SUGGEST an extension rename (e.g. "converted to reverse;
+  consider renaming to `*.wbl`") on stderr, but MUST NOT auto-rename the file on
+  disk. The on-disk name changes only if the user passes an explicit `-o <name>`
+  (write the converted archive under that name) or renames it themselves. This
+  matches the add seed-order rule that the extension is a convenience, never
+  authoritative over the manifest.
+- Transactional like every other mutation (section 5.4a): a failed convert leaves
+  the original archive byte-for-byte unchanged.
+- No-match mask -> RC 8 (target does not exist), consistent with the other
+  mask-driven commands.
+
 ---
 
 ## 6. Return codes
 
 | Code | Meaning |
 |------|---------|
-| 0    | Success |
+| 0    | Success (includes a no-change add/update no-op, section 5.4) |
 | 2    | Usage error (unknown option, mutually exclusive operations, bad args) |
 | 4    | Extract index beyond the last recorded change; original returned with a warning |
-| 8    | Target file does not exist in the archive (update / remove / condense) |
+| 8    | Target file does not exist in the archive (update / remove / condense / convert) |
 
 DECIDED: RC 2 for usage errors (standard GNU convention), including the
 multi-match remove-without-`--force` case.
+
+TYPED ERROR -> RETURN CODE MAPPING. The `walrus-fmt` library surfaces typed
+errors (FR-W7); the CLI maps them to return codes so the doc contract and the
+library error enum stay aligned:
+
+| Library error (`WalrusError`) | Trigger | Return code |
+|-------------------------------|---------|-------------|
+| `NotTracked` | `update` / `remove` / `condense` / `convert` on a file absent from the archive | 8 |
+| `AmbiguousRemove` | `remove` with a mask matching more than one file and no `--force` | 2 |
+| `BinaryInput` | a non-text (binary / invalid-UTF-8 / NUL-bearing) input to `add` / `update` | general failure, non-zero; aborts the batch transaction (5.4a) |
+| `SpliceNotCharBoundary` | an editor-supplied splice that falls mid-UTF-8-character (library/editor path; not reachable from the file-oriented CLI) | general failure, non-zero |
+
+A beyond-last-index selector on `extract` / `cat` is NOT an error of this class:
+it writes the ORIGINAL version with a warning and exits RC 4 (sections 5.2.1 /
+5.2.2).
 
 ---
 
@@ -793,6 +885,11 @@ self-describing when extracted standalone:
 - The exact byte layout (where the field sits in the `.wchg` header) is deferred
   to the FORMAT.md rewrite; the requirement here is only that the attribute
   EXISTS and is readable standalone.
+- NO CLI SURFACE BY DESIGN: standalone `.wchg` replay (reconstructing a bare
+  `.wchg` + its base outside any archive, FR-W9) is a `walrus-fmt` LIBRARY
+  capability (consumed by Walker's history viewer, section 6b.6). No `walrus` or
+  `walx` subcommand operates on a bare `.wchg`; the CLI always works on a whole
+  `.wal`/`.wbl` archive. This omission is intentional, not a gap.
 
 ---
 
