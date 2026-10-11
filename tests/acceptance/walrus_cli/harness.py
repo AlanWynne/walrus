@@ -32,6 +32,36 @@ import unittest
 from pathlib import Path
 
 
+# --- Traceability decorator -------------------------------------------------
+
+def covers(*requirement_ids: str):
+    """Stamp a test method with the requirement ids it exercises.
+
+    The TCR generator (``run_tcr.py``) reads ``func._covers`` off each test to
+    build the requirement traceability matrix. The decorator returns the
+    function unchanged, so it has no effect on the test run itself.
+    """
+
+    def decorate(func):
+        existing = getattr(func, "_covers", ())
+        func._covers = tuple(existing) + tuple(requirement_ids)
+        return func
+
+    return decorate
+
+
+# --- Codec magic numbers (CLI-DESIGN 1.4) -----------------------------------
+
+def zstd_magic() -> bytes:
+    """The four-byte zstd frame magic a written archive begins with."""
+    return bytes([0x28, 0xB5, 0x2F, 0xFD])
+
+
+def gzip_magic() -> bytes:
+    """The two-byte gzip member magic (a deferred codec, must error cleanly)."""
+    return bytes([0x1F, 0x8B])
+
+
 # --- Binary discovery -------------------------------------------------------
 
 def _repo_root() -> Path:
@@ -102,19 +132,27 @@ class WalrusCase(unittest.TestCase):
     # -- running ------------------------------------------------------------
 
     def run_walrus(self, *args: str, stdin: bytes | None = None,
-                   cwd: str | os.PathLike | None = None) -> RunResult:
+                   cwd: str | os.PathLike | None = None,
+                   env: dict[str, str] | None = None) -> RunResult:
         """Run the CLI with the given args; capture code/stdout/stderr.
 
         Never raises on a non-zero exit -- the exit code is data the test
-        asserts on. ``stdin`` is sent as exact bytes when provided.
+        asserts on. ``stdin`` is sent as exact bytes when provided. ``env``, if
+        given, is MERGED over the current environment (used to inject
+        ``WALRUS_ALIAS_PATH`` for the alias tests so the real PATH is untouched).
         """
         argv = [str(self.walrus), *[str(a) for a in args]]
+        child_env = None
+        if env is not None:
+            child_env = dict(os.environ)
+            child_env.update({k: str(v) for k, v in env.items()})
         proc = subprocess.run(
             argv,
             input=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=str(cwd) if cwd else None,
+            env=child_env,
         )
         return RunResult(proc.returncode, proc.stdout, proc.stderr, argv)
 
@@ -195,3 +233,49 @@ class WalrusCase(unittest.TestCase):
 
     def assert_missing(self, path: str | os.PathLike) -> None:
         self.assertFalse(Path(path).exists(), f"expected path to NOT exist: {path}")
+
+    def assert_stderr_contains(self, result: RunResult, needle: str) -> None:
+        self.assertIn(needle, result.err_text, f"stderr missing {needle!r}\n{result!r}")
+
+    def assert_stdout_empty(self, result: RunResult) -> None:
+        self.assertEqual(result.out, b"", f"expected empty stdout, got {result.out!r}")
+
+    def assert_nonzero_no_panic(self, result: RunResult) -> None:
+        """A clean failure: non-zero exit, with no Rust panic / backtrace noise
+        on stderr (the archive layer reports a human error, never a crash)."""
+        self.assertNotEqual(result.code, 0, f"expected a non-zero exit\n{result!r}")
+        lowered = result.err_text.lower()
+        for marker in ("panicked", "panic:", "backtrace", "runtime error"):
+            self.assertNotIn(marker, lowered, f"stderr looks like a panic\n{result!r}")
+
+    # -- compound fixtures --------------------------------------------------
+
+    def seed_archive(self, variant: str = "--wal"):
+        """Create the standard fixture tree and add it ``-R`` into an archive.
+
+        Returns ``(archive_path, source_dir, initial_hashes)`` so every test
+        stops re-deriving the single-version seed. ``variant`` is ``--wal`` or
+        ``--wbl``; the archive path's extension follows the variant.
+        """
+        src = self.make_fixture_tree(self.work / "src")
+        ext = "wbl" if variant == "--wbl" else "wal"
+        arc = self.work / f"a.{ext}"
+        self.assert_code(self.run_walrus("add", arc, src, "-R", variant), 0)
+        return arc, src, self.tree_hashes(src)
+
+    def make_multi_version(self, arc: Path, src: Path) -> dict[str, str]:
+        """Edit two files in *src* and ``update -R`` the archive, giving a
+        mixed 2-version archive. Returns the edited tree hashes."""
+        self.write(src / "readme.txt", "hello walrus\nline two CHANGED")
+        self.write(src / "notes" / "todo.md", "# TODO\n- first item\n- added")
+        edited = self.tree_hashes(src)
+        self.assert_code(self.run_walrus("update", arc, src, "-R"), 0)
+        return edited
+
+    # -- codec helpers ------------------------------------------------------
+
+    @staticmethod
+    def read_archive_magic(path: str | os.PathLike) -> bytes:
+        """The first four bytes of an archive file (its codec magic)."""
+        with open(path, "rb") as handle:
+            return handle.read(4)
