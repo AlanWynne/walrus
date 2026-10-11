@@ -4233,6 +4233,7 @@ name = "walx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
  "walrus-fmt",
 ]
 
