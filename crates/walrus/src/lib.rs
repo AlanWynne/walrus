@@ -30,6 +30,7 @@ mod mutate_remove;
 mod rebase;
 mod reconstruct;
 mod record;
+mod standalone;
 mod timestamp;
 mod version;
 mod wchg;
