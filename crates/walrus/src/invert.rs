@@ -33,10 +33,6 @@ use crate::{reconstruct, Result, WalrusError};
 /// [`crate::reconstruct::apply_record`]), or when the captured deleted bytes are
 /// not valid UTF-8 (an internal invariant breach the boundary check should have
 /// caught: never a panic).
-// FR-W7 FEAT-001 foundation: the production callers are the reverse-file
-// storage path (FEAT-002) and `convert` (FEAT-003); until they land it is
-// exercised only by this module's and archive.rs/mutate.rs test fixtures.
-#[allow(dead_code)]
 pub(crate) fn invert_forward_splices(
     version: &[u8],
     forward: &[ChangeRecord],

@@ -263,6 +263,19 @@ impl Archive {
         self.files.iter().find(|f| f.id == tracked.id)
     }
 
+    /// Build an [`Archive`] from a manifest and parsed per-file entries, for the
+    /// `convert` mutate path (which returns a NEW archive). Not part of the
+    /// public API. The caller guarantees the manifest and files share ids.
+    pub(crate) fn from_directories(manifest: Manifest, files: Vec<ArchiveFile>) -> Archive {
+        Archive { manifest, files }
+    }
+
+    /// Read-only access to the parsed per-file entries, for the sibling
+    /// `mutate_convert` module. Not part of the public API.
+    pub(crate) fn files_ref(&self) -> &[ArchiveFile] {
+        &self.files
+    }
+
     /// Mutable access to the manifest, for the sibling `mutate` module. Not
     /// part of the public API: re-base/condense update the per-file manifest
     /// entry (versions, checkpoints, rebase audit) through this seam.
@@ -282,9 +295,6 @@ impl Archive {
     /// cannot push or remove a file; handing the manifest and the file vec out
     /// together lets a caller mutate both in lockstep so [`Archive::to_bytes`]
     /// never sees a half-added or half-removed file. Not part of the public API.
-    // FR-W7 FEAT-001 foundation: first callers are `push_tracked` (FEAT-002
-    // add) and `remove_tracked` (FEAT-002 remove); unused until they land.
-    #[allow(dead_code)]
     pub(crate) fn directories_mut(&mut self) -> (&mut Manifest, &mut Vec<ArchiveFile>) {
         (&mut self.manifest, &mut self.files)
     }

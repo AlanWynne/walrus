@@ -133,8 +133,12 @@ impl Archive {
             .ok_or_else(|| WalrusError::UnknownFile { id: id.to_string() })
     }
 
-    /// Mutable access to one parsed per-file entry by id.
-    fn archive_file_mut(&mut self, id: &str) -> Result<&mut crate::archive::ArchiveFile> {
+    /// Mutable access to one parsed per-file entry by id. Shared with the
+    /// sibling `mutate_add` module's save path, so it is `pub(crate)`.
+    pub(crate) fn archive_file_mut(
+        &mut self,
+        id: &str,
+    ) -> Result<&mut crate::archive::ArchiveFile> {
         self.files_mut()
             .iter_mut()
             .find(|f| f.id == id)
