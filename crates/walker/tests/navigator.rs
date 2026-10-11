@@ -136,6 +136,68 @@ fn selecting_a_file_binds_the_active_ref_and_routes_reconstruct() {
     );
 }
 
+/// FR-K7: each internal row renders an advisory bloat band that matches what
+/// the pure classifier computes from the row's `FileInfo` and the default
+/// thresholds. `InMemorySource` cannot express an index_size >= 50 or a high
+/// ratio, so the EXACT band each sample row shows is GREEN (every sample file
+/// is under the <50-version floor); this proves the row READS the band from
+/// `file_info` and renders a non-pixel, queryable affordance. The band->colour
+/// paint itself is a MANUAL visual check; every band boundary and the floor are
+/// covered directly on `classify` in the bloat unit tests (AC1/AC2).
+#[test]
+fn internal_pane_renders_the_bloat_band_the_classifier_computes() {
+    let source = InMemorySource::sample();
+
+    // Expected band for README.md from its real figures + default thresholds.
+    let readme = source.file_named("README.md");
+    let info = source.file_info(&readme);
+    let expected = walker::navigator::bloat::classify(
+        info.log_bytes,
+        info.size_bytes,
+        info.index_size,
+        &walker::navigator::bloat::BloatThresholds::default(),
+    );
+    assert_eq!(
+        expected,
+        walker::navigator::bloat::BloatBand::Green,
+        "every sample file is under the <50-version floor, so GREEN"
+    );
+
+    let state = NavigatorState::default();
+    let mut import = ImportState::default();
+    let mut harness = Harness::new_ui_state(
+        move |ui, state: &mut NavigatorState| {
+            navigator::panels(ui, &source, &NoPicker, &mut import, state);
+        },
+        state,
+    );
+    harness.run();
+
+    // Each of the five sample rows exposes the band name in a non-interactive
+    // label; all are GREEN (under the <50-version floor). Use query_all because
+    // the band tag text repeats across rows. The exact paint colour is a MANUAL
+    // visual check; this asserts the band the row was GIVEN, read from file_info.
+    let green_tags = harness.query_all_by_label_contains("bloat: GREEN").count();
+    assert_eq!(
+        green_tags, 5,
+        "every sample row renders a GREEN bloat band read from file_info"
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("bloat: AMBER")
+            .next()
+            .is_none(),
+        "no sample row is AMBER under the floor"
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("bloat: RED")
+            .next()
+            .is_none(),
+        "no sample row is RED under the floor"
+    );
+}
+
 /// AC3: multi-select of two files enables the batch-action button; one selected
 /// leaves it disabled. Driven headlessly on model state and the enabled widget.
 #[test]

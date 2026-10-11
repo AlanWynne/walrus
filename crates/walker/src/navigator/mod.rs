@@ -23,8 +23,11 @@ use eframe::egui;
 use crate::import::{FilePicker, ImportOutcome, ImportState};
 use crate::source::{FileRef, HistorySource};
 
+pub mod bloat;
 mod external;
 mod internal;
+
+use self::bloat::BloatThresholds;
 
 /// The navigator's selection model: the active file (AC2) and the multi-select
 /// set (AC3).
@@ -38,6 +41,9 @@ pub struct NavigatorState {
     active: Option<FileRef>,
     /// Multi-select set for batch affordances (AC3): ids into `source.files()`.
     selected: BTreeSet<usize>,
+    /// The overridable FR-K7 bloat thresholds the internal pane reads instead
+    /// of inline literals. Defaults to the FR-K7 starting values (2.0/5.0/50).
+    bloat_thresholds: BloatThresholds,
 }
 
 impl NavigatorState {
@@ -76,6 +82,11 @@ impl NavigatorState {
     /// AC3: batch actions are enabled only with two or more files selected.
     pub fn batch_enabled(&self) -> bool {
         self.selected_count() >= 2
+    }
+
+    /// The FR-K7 bloat thresholds the internal pane colours rows against.
+    pub fn bloat_thresholds(&self) -> &BloatThresholds {
+        &self.bloat_thresholds
     }
 }
 
@@ -161,6 +172,18 @@ mod tests {
         assert_eq!(state.active().map(FileRef::id), Some(0));
         state.select(&file(3, "data.json"));
         assert_eq!(state.active().map(FileRef::id), Some(3));
+    }
+
+    #[test]
+    fn default_navigator_state_carries_the_default_bloat_thresholds() {
+        let state = NavigatorState::default();
+        let defaults = BloatThresholds::default();
+        assert_eq!(state.bloat_thresholds().amber_at, defaults.amber_at);
+        assert_eq!(state.bloat_thresholds().red_at, defaults.red_at);
+        assert_eq!(
+            state.bloat_thresholds().floor_index_count,
+            defaults.floor_index_count
+        );
     }
 
     #[test]
