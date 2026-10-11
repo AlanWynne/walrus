@@ -12,10 +12,12 @@ use anyhow::Result;
 use wal_cli_common::error::CliError;
 
 use crate::{
-    cmd_add, cmd_cat, cmd_condense, cmd_convert, cmd_extract, cmd_query, cmd_remove, cmd_update,
+    cmd_add, cmd_alias, cmd_cat, cmd_condense, cmd_convert, cmd_extract, cmd_query, cmd_remove,
+    cmd_update,
 };
 
-/// The eight content operations this binary dispatches.
+/// The operations this binary dispatches: the eight content commands plus the
+/// `alias` shim helper (which mutates no archive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Query,
@@ -26,6 +28,7 @@ pub enum Op {
     Remove,
     Condense,
     Convert,
+    Alias,
 }
 
 /// Dispatch to a subcommand, returning its process return code.
@@ -56,6 +59,7 @@ pub fn run_with(argv: &[String]) -> Result<u8> {
         Op::Remove => cmd_remove::run(&rest),
         Op::Condense => cmd_condense::run(&rest),
         Op::Convert => cmd_convert::run(&rest),
+        Op::Alias => cmd_alias::run(&rest),
     }
 }
 
@@ -131,6 +135,7 @@ fn canonical_op(token: &str) -> Option<Op> {
         "remove" => Some(Op::Remove),
         "condense" => Some(Op::Condense),
         "convert" => Some(Op::Convert),
+        "alias" => Some(Op::Alias),
         _ => None,
     }
 }
@@ -159,7 +164,8 @@ pub fn print_usage() {
          \x20 walrus update   <archive> <files...>  [--generations <n>] [-R]\n\
          \x20 walrus remove   <archive> <file-mask> [--force]\n\
          \x20 walrus condense <archive> <file-mask> [--keep <n>]\n\
-         \x20 walrus convert  <archive> [file-mask] --to <wal|wbl> [-o <name>]\n\n\
+         \x20 walrus convert  <archive> [file-mask] --to <wal|wbl> [-o <name>]\n\
+         \x20 walrus alias    <install|remove|status> [--name <alias>] [--dir <dir>] [--force]\n\n\
          A bare `walrus <archive>` lists the archive (query). Read from stdin with\n\
          `-` plus `--name <stored-name>` on add/update.\n\n\
          SELECTOR (at most one):\n\

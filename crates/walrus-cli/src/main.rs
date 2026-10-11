@@ -17,8 +17,10 @@ use walrus_fmt::WalrusError;
 
 use wal_cli_common::error::CliError;
 
+mod alias_shim;
 mod clock;
 mod cmd_add;
+mod cmd_alias;
 mod cmd_cat;
 mod cmd_condense;
 mod cmd_convert;
