@@ -1,0 +1,27 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": "MEDIUM-1",
+      "severity": "MEDIUM",
+      "title": "FORMAT.md section 3 manifest example still shows an old-style id (\"a1b2c3\"), contradicting the new f<N> scheme",
+      "where": "FORMAT.md section 3 manifest.json example",
+      "fix": "Change the example id to the reference scheme, e.g. \"id\": \"f0\", and add this example fix to the Change-1 FORMAT.md edit list so the normative f<N> prose and the example agree (FORMAT.md is the source of truth, INV-1)."
+    },
+    {
+      "id": "MEDIUM-2",
+      "severity": "MEDIUM",
+      "title": "Create-time set_attributes_mtime call site and create-only gating are unspecified",
+      "where": "design.md Change 3 (count-0 mtime) and cmd_add.rs run-loop wiring",
+      "fix": "After add_at(...) in the run loop, call archive.set_attributes_mtime(&source.name, &source.ts) ONLY when !was_tracked (the flag the loop already computes), reusing the pre-formatted source.ts rather than re-reading a path. State that cmd_update.rs needs no such call because update cannot create (errors NotTracked on an absent name)."
+    },
+    {
+      "id": "NIT-1",
+      "severity": "NIT",
+      "title": "Multi-version file with a stamp-less current record falls back to the older create-time attributes.mtime",
+      "where": "design.md Change 2 last_write_time resolution order",
+      "fix": "Acceptable as-is (best-effort, better than '-'). Optionally drop the attributes.mtime fallback when the file has >= 1 record if the owner prefers '-' over a stale create-time value. No change required."
+    }
+  ],
+  "reviewDoc": "c:\\workspace\\Walrus\\.worktrees\\wc-listing\\.agents\\tasks\\wc-listing\\design-review.md"
+}

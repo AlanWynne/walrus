@@ -131,9 +131,30 @@ that file replays (section 4.2).
 An archive contains exactly one top-level `manifest.json`, and for each tracked
 file a directory `files/<id>/` holding that file's base and its `.wchg` change
 log. `<id>` is a stable, archive-unique identifier for the tracked file (see the
-manifest `id` field in section 3); it is a filesystem-safe slug and is NOT the
-original filename (the original name, which may contain path separators or
-awkward characters, is recorded in the manifest).
+manifest `id` field in section 3). It is a SHORT token that is DECOUPLED from the
+file's name and path: it is NOT the original filename and NOT derived from it
+(the original name, which may contain path separators or awkward characters, is
+recorded in the manifest `name` field, which stays authoritative for the human
+path).
+
+The id MUST be a short, filesystem-safe token whose length does NOT grow with
+the tracked file's name or path depth, so that every derived member path stays
+within the ustar `name` field limit (<= 100 bytes; see the member-path note
+below). The reference writer mints ids as the sequential tokens `f0`, `f1`,
+`f2`, ... assigned in manifest (`files` array) order: the Nth tracked file added
+to an archive gets id `fN`. This scheme is deterministic (same inputs in the
+same order yield the same ids), human-readable, and keeps every id to a few
+bytes regardless of how deep or how long the file's `name` is. A conforming
+reader MUST treat the id as an opaque archive-unique token and MUST NOT infer the
+file's name or path from it; a conforming writer MAY use any scheme that yields
+short, archive-unique, filesystem-safe ids, but the reference `f<N>` scheme is
+RECOMMENDED for determinism and readability.
+
+Because every member path is `files/<id>/base` or `files/<id>/<name>.wchg` and
+`<id>` is a short token, the `base` member path is always well within the ustar
+100-byte `name`-field limit. The `.wchg` member carries the readable `<name>`
+rendering (below) purely for human convenience; see that note for how a writer
+keeps even that path ustar-legal.
 
 | Member path                 | Required | Contents                                                              |
 |-----------------------------|----------|-----------------------------------------------------------------------|
@@ -151,7 +172,16 @@ Notes:
   of the tracked file's name, present only for human convenience when the log is
   extracted standalone. The AUTHORITATIVE original filename, path, and
   attributes live in the manifest's per-file entry (section 3), not in the
-  member path.
+  member path. Because this rendering is advisory only, a writer MUST keep the
+  WHOLE `files/<id>/<name>.wchg` member path within the ustar `name`-field limit
+  (<= 100 bytes): it renders the manifest name filesystem-safe (path separators
+  become `_`) and, when the resulting member path would still exceed the limit,
+  SHORTENS the `<name>` portion (e.g. keeps a trailing, size-bounded slice of the
+  rendered name) so the path fits. Shortening the advisory `<name>` loses no
+  information: the authoritative name is in the manifest, and the reader matches
+  the `.wchg` member by its `files/<id>/` directory and `.wchg` extension, never
+  by reconstructing the exact `<name>`. A conforming reader MUST locate a file's
+  log by directory + extension and MUST NOT depend on the `<name>` text.
 - Each tracked file's `base` member carries no implied text encoding beyond "the
   document bytes"; the manifest records that file's declared encoding and MIME
   type.
@@ -176,7 +206,7 @@ one entry per tracked file.
   "generator": "walrus 0.1.0",
   "files": [
     {
-      "id": "a1b2c3",
+      "id": "f0",
       "name": "src/document.txt",
       "encoding": "utf-8",
       "mime": "text/plain",
@@ -225,7 +255,12 @@ Archive-level field notes:
 
 Per-file field notes (each element of `files`):
 - `id` -- stable, archive-unique, filesystem-safe identifier matching the
-  `files/<id>/` directory. MUST NOT change for the life of the tracked file.
+  `files/<id>/` directory. It is a SHORT token DECOUPLED from `name`/path, whose
+  length does NOT grow with the file's name or path depth, so every derived
+  member path stays ustar-legal (section 2.1). The reference writer mints
+  sequential ids `f0`, `f1`, `f2`, ... in `files`-array order; a reader MUST
+  treat the id as opaque and MUST NOT infer the file's name from it. MUST NOT
+  change for the life of the tracked file.
 - `name` -- the original filename and relative path as the user supplied it
   (the authoritative name; may contain `/`).
 - `encoding` / `mime` -- the declared text encoding and MIME type for this
