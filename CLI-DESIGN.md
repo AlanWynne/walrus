@@ -409,8 +409,8 @@ mere alias of extract.
 ### 5.3 Add
 
 ```
-walrus add <archive> <files-to-add...> [--generations <n>]   # canonical
-walrus <archive> <files-to-add...> -a                          # alias
+walrus add <archive> <files-to-add...> [--generations <n>] [-R | --recurse]   # canonical
+walrus <archive> <files-to-add...> -a                                          # alias
 ```
 
 - `files-to-add` may be a list of names/paths, including wildcards.
@@ -424,12 +424,16 @@ walrus <archive> <files-to-add...> -a                          # alias
   defaults to 0 (unlimited).
 - If adding exceeds a file's generation cap, the oldest version(s) are
   auto-dropped (re-base) per section 2.1.
+- `-R` / `--recurse` descends into any directory argument and adds every file
+  found beneath it, storing each under its path RELATIVE to the recursion root
+  as the archive name (section 5.4b). Without `-R`, a directory argument is a
+  usage error (RC 2).
 
 ### 5.4 Update
 
 ```
-walrus update <archive> <files-to-update...> [--generations <n>]   # canonical
-walrus <archive> <files-to-update...> -u                            # alias
+walrus update <archive> <files-to-update...> [--generations <n>] [-R | --recurse]   # canonical
+walrus <archive> <files-to-update...> -u                                             # alias
 ```
 
 - If the file EXISTS in the archive: it becomes the new current version; a diff
@@ -439,6 +443,12 @@ walrus <archive> <files-to-update...> -u                            # alias
   it leaves the cap unchanged.
 - If updating exceeds a file's generation cap, the oldest version(s) are
   auto-dropped (re-base) per section 2.1.
+- `-R` / `--recurse` descends into any directory argument and updates every file
+  found beneath it, matching each by its path RELATIVE to the recursion root
+  against the archive name (section 5.4b). Because update refuses files absent
+  from the archive, a recursed file not already tracked fails RC 8 per the batch
+  transaction (section 5.4a); use `add` to introduce new files. Without `-R`, a
+  directory argument is a usage error (RC 2).
 
 Difference from Add: Add creates a missing file; Update refuses and fails. The
 diff/update behavior is otherwise identical.
@@ -457,6 +467,160 @@ TRANSACTIONAL across the whole batch:
   rename gives all-or-nothing with no corruption window.
 - On failure the command exits non-zero (RC 8 when a target does not qualify,
   otherwise a general failure code).
+
+### 5.4b Directory recursion (`-R` / `--recurse`) -- DECIDED
+
+`add` and `update` take file arguments, not directories. `-R` / `--recurse`
+extends them to descend into directory arguments and ingest the files beneath.
+
+- FLAG SPELLING: `-R` (uppercase) or `--recurse`. Uppercase deliberately, because
+  the lowercase short `-r` is already the `remove` alias (section 5.5); reusing it
+  for recursion would be ambiguous. Uppercase `-R` also matches the common
+  recursive-flag convention (`cp -R`, `grep -R`, `ls -R`).
+
+- WITHOUT `-R`: a directory given as a file argument is a usage error (RC 2) --
+  add/update operate on files, and silently skipping a directory would hide a
+  mistake.
+
+- WITH `-R`: each argument is classified:
+  - a FILE argument is ingested as before (its name is the stored archive name,
+    exactly as in the non-recursive case -- `-R` does not change how plain file
+    arguments are named);
+  - a DIRECTORY argument becomes the RECURSION ROOT: the directory is walked and
+    every regular file found beneath it (at any depth) is ingested.
+
+- STORED NAME = RELATIVE PATH. A file discovered under a recursed directory is
+  stored under its path RELATIVE to the recursion root, with the root directory's
+  own name as the leading component, using `/` as the separator on every
+  platform (the manifest `name` field already permits `/`, section 2 /
+  manifest.rs). Example: `walrus add a.wal src -R` where `src/` contains
+  `main.rs` and `net/http.rs` stores the archive names `src/main.rs` and
+  `src/net/http.rs`. This makes the relative tree round-trip: `extract`
+  (section 5.2.1) already recreates stored relative paths on disk, so a recursed
+  add followed by an extract reproduces the directory layout.
+
+- MASK INTERACTION: a wildcard argument (section 5, `<file-mask>`) still expands
+  via the shell / mask matcher to the set of paths it matches. `-R` governs only
+  how a DIRECTORY among those paths is treated (descend vs. RC 2). A mask that
+  matches only files behaves identically with or without `-R`.
+
+- SYMLINKS AND SPECIAL FILES: the walk follows regular files only. Symbolic links
+  are NOT followed (avoids cycles and escaping the recursion root); directory
+  symlinks and non-regular files (devices, sockets, FIFOs) are skipped. A skipped
+  entry is reported on stderr but does not fail the batch.
+
+- BINARY FILES: recursion does not relax the text-only rule (section 2.2.2). A
+  binary file encountered during the walk is rejected like any other binary
+  input; under the batch transaction (section 5.4a) that aborts the whole add/
+  update and leaves the archive unchanged. (A future `--skip-binary` ergonomics
+  option is noted as an open question, not decided here.)
+
+- DETERMINISM: directory entries are ingested in a STABLE sorted order (by
+  relative path) so a given directory tree always produces the same batch order
+  and the same resulting archive, satisfying the deterministic-output rule in the
+  testing convention.
+
+- EMPTY DIRECTORIES carry no file and are simply not represented (the archive
+  tracks files, not directory nodes).
+
+OPEN (ergonomics, not blocking): `--skip-binary` to skip rather than reject binary
+files during a recurse; include/exclude globs layered on top of the walk. Both are
+additive and can be decided when the add/update implementation lands.
+
+### 5.4c Cross-platform names and mask semantics -- DECIDED
+
+Recursion (5.4b) stores a RELATIVE PATH as the archive `name`. Those names must
+round-trip between platforms (an archive built on Windows must extract to the
+identical tree on Linux and vice versa), so the separator handling and the
+`<file-mask>` matching are pinned here. These rules apply to every command that
+reads or matches a stored name (`query`, `extract`, `cat`, `remove`), not just
+`add`/`update`.
+
+- CANONICAL STORED SEPARATOR IS `/`, ALWAYS. A stored `name` uses `/` as its one
+  and only path separator on every platform (restating the 5.4b invariant). The
+  archive is thus platform-neutral: it never contains a `\` as a separator.
+
+- NORMALIZE ON WRITE (add/update, the producing side). When deriving a stored
+  name from an on-disk relative path, convert the running platform's OS path
+  separator to `/`. On Windows that means `\` (the OS separator) becomes `/`; the
+  name `src\net\http.rs` is stored as `src/net/http.rs`. On a POSIX platform the
+  separator is already `/` and NO backslash substitution is performed -- a `\` in
+  a POSIX filename is a legal DATA character and is preserved verbatim (it is not
+  a separator there). So the rule is "normalize the OS's actual separator", NOT
+  "replace all backslashes"; the latter would corrupt a POSIX file literally
+  named `a\b.txt`.
+
+- LOCALIZE ON READ (extract, the restoring side). Extract splits a stored name on
+  `/` and rebuilds the on-disk path with the LOCAL platform separator (identity
+  on POSIX; `/` -> `\` on Windows). Intermediate directories are created as
+  needed (mkdir -p semantics). Extract MUST NOT hand a raw stored string to the
+  OS and rely on incidental acceptance; it splits on `/` and joins components.
+
+- MASK MATCHING IS SEGMENT-AWARE OVER `/`. A `<file-mask>` is matched against the
+  stored `/`-separated name with these glob semantics (one rule shared by
+  `query`, `extract`, `remove`):
+  - `*` matches within a single path segment and does NOT cross `/`
+    (so `src/*` matches `src/main.rs` but NOT `src/net/http.rs`);
+  - `**` matches across segments including `/`
+    (so `src/**` matches both `src/main.rs` and `src/net/http.rs`);
+  - `?` matches a single non-`/` character;
+  - a mask with no wildcard is an exact whole-name match.
+  Matching is performed on the normalized `/` form, so the SAME mask selects the
+  SAME files regardless of the platform the command runs on. (A shell may also
+  expand an unquoted wildcard before the CLI sees it; that is the shell's doing
+  and is independent of this internal matcher, which operates on stored names.)
+
+### 5.4d Extract naming safety: reserved names, path escaping, sanitize, rename -- DECIDED
+
+A stored name is platform-neutral, but the TARGET filesystem may be unable to
+represent it: Windows reserves characters (`< > : " | ? *`) and device names
+(`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with or without an
+extension), forbids trailing dots/spaces, and is case-insensitive; a crafted or
+cross-platform archive may also carry a name that escapes the output directory.
+Extract's policy, consistent with the fidelity-first, refuse-by-default posture
+already used for overwrite safety (5.2.1):
+
+- SECURITY -- PATH ESCAPING IS ALWAYS REFUSED (not optional, no flag relaxes it).
+  Before writing, extract rejects any stored name that, once resolved under
+  `-o <dir>`, would land OUTSIDE `-o <dir>`: an absolute path, a leading `/`, a
+  drive-qualified path, or any `..` component. Such a file is refused with a
+  stderr message and the command exits RC 2. This closes the "zip-slip" class of
+  vulnerability and holds even with `--sanitize` or `--force`.
+
+- DEFAULT -- REFUSE AND REPORT (per file). A target that the local filesystem
+  cannot represent (reserved device name, illegal character, trailing dot/space,
+  or a case-collision with a file already written this run) is REFUSED for that
+  file, reported on stderr naming the file and the reason, and the command exits
+  RC 2. Other selected files still extract: extract writes to disk per file and
+  is NOT transactional (unlike the mutate ops in 5.4a), so one unrepresentable
+  file does not abort the batch. No silent mangling by default -- a renamed file
+  would no longer match its stored name and would break the add/extract
+  round-trip invariant.
+
+- OPT-IN -- `--sanitize` (bulk convenience, the 7-Zip-style path). When the user
+  wants the bytes out and does not need names preserved, `--sanitize` deterministic-
+  ally rewrites an unrepresentable target so it can be written: reserved characters
+  -> `_`, a reserved device name gets a `_` suffix (`aux` -> `aux_`), trailing dots/
+  spaces trimmed. Each remapping is reported on stderr (stored name -> written
+  name) so the result is auditable. `--sanitize` never relaxes the path-escaping
+  refusal above, and still refuses (RC 2) if a sanitized name collides with an
+  already-written file unless `--force` is also given.
+
+- SINGLE-FILE RENAME IS AVAILABLE TODAY VIA `cat`. To restore ONE file under a
+  chosen name, `cat` already writes raw bytes to stdout with redirection as the
+  rename mechanism (5.2.2): `walrus cat a.wal "weird:name.txt" > safe.txt`. This
+  is the supported single-file rename path and needs no new flag. (It does not
+  restore recorded attributes or create directories -- those are extract's job.)
+
+- RETURN CODES: path-escape or unrepresentable-name refusal -> RC 2 (usage/safety),
+  matching the existing overwrite-refusal code; the beyond-last-index RC 4 and the
+  target-missing RC 8 semantics from 5.2.1 / section 5 are unchanged.
+
+OPEN (ergonomics, not blocking): an explicit extract rename flag `--as <name>`
+(valid only when the mask selects exactly one file, same single-match rule as
+`cat`) to restore that one file under a given name WITH attribute restoration and
+`-o`/`--force` -- the capability `cat` cannot provide. Deferred unless real use
+demands it; `cat`-with-redirect covers single-file rename in the meantime.
 
 ### 5.5 Remove (new)
 
