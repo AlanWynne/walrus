@@ -62,7 +62,10 @@ REGISTRY: dict[str, str] = {
     "CLI-DESIGN-5.4a-transactional": "failed batch leaves archive unchanged",
     "CLI-DESIGN-5.4b-recurse": "directory recursion stored-name rules",
     "CLI-DESIGN-5.4c-mask-segment": "/-canonical names; segment-aware matching",
-    "CLI-DESIGN-5.4d-sanitize": "--sanitize remaps + reports",
+    "CLI-DESIGN-5.4d-sanitize": "--sanitize is accepted and never relaxes the "
+    "path-escape refusal (the remap+report branch needs an archive with an "
+    "unsafe stored name, which the CLI refuses to CREATE, so that branch is "
+    "driven by the Rust safety.rs unit tests, not this black-box suite)",
     "CLI-DESIGN-5.4d-refuse": "default refuses unrepresentable name RC 2",
     "CLI-DESIGN-5.4d-zipslip": "path-escape refused RC 2 even with sanitize/force",
     "CLI-DESIGN-5.4e-stdin": "'-' + --name stdin ingestion rules",

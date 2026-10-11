@@ -149,15 +149,26 @@ def build_matrix(records: dict[str, dict]) -> dict[str, dict]:
                 by_id[rid].append((test_id, rec["outcome"]))
 
     matrix: dict[str, dict] = {}
-    # Outcomes that count as "the requirement is demonstrated satisfied".
-    green = {"pass", "skip", "expected_failure"}
+    # Outcomes that DEMONSTRATE a requirement is satisfied. A `skip` is NOT
+    # among them: a skipped test proves nothing, so a requirement whose only
+    # covering test skipped is treated as UNCOVERED (not PASS) -- otherwise an
+    # OS-gated case skipping on one platform could silently pass a gap there.
+    # An `expected_failure` is a captured known bug and counts as demonstrated
+    # (the behaviour is pinned); `unexpected_success` is a failure.
+    green = {"pass", "expected_failure"}
+    fail_outcomes = {"fail", "error", "unexpected_success"}
     for rid, tests in by_id.items():
+        outcomes = [outcome for _tid, outcome in tests]
         if not tests:
             verdict = "UNCOVERED"
-        elif all(outcome in green for _tid, outcome in tests):
+        elif any(o in fail_outcomes for o in outcomes):
+            verdict = "FAIL"
+        elif any(o in green for o in outcomes):
+            # At least one real (non-skip) covering test demonstrates it.
             verdict = "PASS"
         else:
-            verdict = "FAIL"
+            # Covered only by skipped tests -> not demonstrated on this run.
+            verdict = "UNCOVERED"
         matrix[rid] = {
             "description": requirements.REGISTRY[rid],
             "tests": [{"test": tid, "outcome": oc} for tid, oc in sorted(tests)],

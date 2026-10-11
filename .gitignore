@@ -13,3 +13,7 @@
 
 # cargo-gate ephemeral artefacts
 /.gate/
+
+# Python bytecode cache (acceptance harness)
+__pycache__/
+*.py[cod]
