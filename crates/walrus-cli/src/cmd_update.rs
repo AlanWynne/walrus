@@ -112,13 +112,17 @@ fn collect_sources(args: &UpdateArgs) -> Result<Vec<Source>> {
     Ok(out)
 }
 
-/// Normalise a file argument into its stored name (normalize-on-write, 5.4c).
+/// The stored name for a PLAIN file argument (not under `-R`): the file's own
+/// name (basename), matching how `add` names a plain file argument so an
+/// `update <archive> <path>` resolves to the file `add <archive> <path>`
+/// created. A bare file argument carries no tracked-tree context, so the full
+/// (possibly absolute) path is never used as the name; the `-R` recursion path
+/// handles relative-tree naming separately (CLI-DESIGN 5.4b/5.4c).
 fn stored_name(arg: &str) -> String {
-    if std::path::MAIN_SEPARATOR == '/' {
-        arg.to_string()
-    } else {
-        arg.replace(std::path::MAIN_SEPARATOR, "/")
-    }
+    std::path::Path::new(arg)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| arg.to_string())
 }
 
 /// Parse `update` tokens.

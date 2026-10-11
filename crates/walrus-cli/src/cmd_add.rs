@@ -119,14 +119,19 @@ fn collect_sources(args: &AddArgs) -> Result<Vec<Source>> {
     Ok(out)
 }
 
-/// Normalise a file argument into its stored name: the OS separator becomes `/`
-/// (normalize-on-write, CLI-DESIGN 5.4c). On POSIX the separator is already `/`.
+/// The stored name for a PLAIN file argument (not under `-R`): the file's own
+/// name (basename), never the directory path it was given by. A bare file
+/// argument has no tracked-tree context, so storing the full path -- especially
+/// an absolute or drive-qualified one -- would both leak the caller's directory
+/// layout into the archive and produce an invalid `files/<id>/` member. The
+/// recursion path (`-R`, `recurse::collect_dir`) handles relative-tree naming
+/// separately (CLI-DESIGN 5.4b/5.4c). The result always uses `/` and carries no
+/// separator for a plain file (it is a single component).
 fn stored_name(arg: &str) -> String {
-    if std::path::MAIN_SEPARATOR == '/' {
-        arg.to_string()
-    } else {
-        arg.replace(std::path::MAIN_SEPARATOR, "/")
-    }
+    Path::new(arg)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| arg.to_string())
 }
 
 /// Open the archive, or create an empty one of the seed-order variant when the
