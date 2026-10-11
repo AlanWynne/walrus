@@ -528,6 +528,32 @@ walrus <archive> <files-to-update...> -u                                        
 Difference from Add: Add creates a missing file; Update refuses and fails. The
 diff/update behavior is otherwise identical.
 
+#### No-change save (diff finds nothing) -- DECIDED
+
+When `add` or `update` is given content byte-identical to the file's CURRENT
+version, the diff produces no net splice. This is a SUCCESS no-op, not an error:
+the file is left exactly as it was, NO new version is recorded, and the version
+index does NOT advance (it counts real saves, consistent with the one-net-splice-
+per-save rule, FORMAT.md 4.4; the library already returns success and stores
+nothing in this case). This mirrors the familiar "nothing to commit" of a VCS.
+
+- RETURN CODE: 0 (success). A no-change save is the archive already being in the
+  desired state, not a failure.
+- REPORTING: the CLI prints a per-file note to STDERR (e.g. `doc.txt: no change,
+  not versioned`) so a no-op is never mistaken for a recorded version, while
+  STDOUT stays clean for scripting.
+- BATCH / RECURSE: in a multi-file or `-R` add/update, each file is judged
+  independently -- changed files version normally, unchanged files are skipped
+  with the note above, and the command still exits 0. A no-change file is NOT a
+  batch failure and does NOT trigger the transactional abort (5.4a); only a genuine
+  error (a binary file per 2.2.2, or an `update` target absent from the archive,
+  RC 8) aborts the batch and leaves the archive byte-for-byte unchanged.
+- `--generations <n>` ON A NO-CHANGE SAVE: the content stores nothing, but an
+  explicitly supplied generation cap is still applied to the file (and may trigger
+  a re-base/trim if the existing count now exceeds it), since setting the cap is a
+  separate intent from recording a new version. Omitting `--generations` leaves
+  the cap untouched, as stated above.
+
 ### 5.4a Transactional (all-or-nothing) writes -- DECIDED
 
 Any operation that mutates the archive (add, update, remove, condense) is
