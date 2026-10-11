@@ -41,6 +41,11 @@ docx-rs = { version = "0.4", optional = true }
 # us from silently depending on anything beyond what is listed.
 similar = { version = "2.7", optional = true, default-features = false, features = ["text", "unicode"] }
 
+# Optional encoding transcoder (FR-W8): decode a declared source encoding into
+# UTF-8 on the way in and re-encode on the way out. Behind the `i18n` feature so
+# a playback-only embedder stays lean (dependency boundary, invariant 2).
+encoding_rs = { version = "0.8", optional = true }
+
 [dev-dependencies]
 # For the example generators only; not part of the library's dependency graph.
 anyhow = { workspace = true }
@@ -61,3 +66,6 @@ export-docx = ["dep:docx-rs"]
 export-all = ["export-html", "export-md", "export-csv", "export-json", "export-pdf", "export-docx"]
 # The diff engine (FR-W6) is opt-in; it pulls `similar` only when enabled.
 diff = ["dep:similar"]
+# The i18n encoding path (FR-W8) is opt-in; it pulls `encoding_rs` only when
+# enabled. The default build links neither `similar` nor `encoding_rs`.
+i18n = ["dep:encoding_rs"]

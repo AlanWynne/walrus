@@ -4215,6 +4215,7 @@ dependencies = [
  "anyhow",
  "csv",
  "docx-rs",
+ "encoding_rs",
  "printpdf",
  "pulldown-cmark",
  "scraper",

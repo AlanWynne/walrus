@@ -109,10 +109,54 @@ pub enum WalrusError {
     Json(#[from] serde_json::Error),
 
     /// The diff engine was given binary input (FR-W6). The adapter takes UTF-8
-    /// `&str`, so this triggers when otherwise-valid UTF-8 contains a NUL byte.
+    /// `&str`, so this triggers when the input is not valid UTF-8 or when
+    /// otherwise-valid UTF-8 contains a NUL byte.
     #[error("binary input rejected: {reason}")]
     BinaryInput {
         /// Human-readable reason the input was treated as binary.
+        reason: String,
+    },
+
+    /// A mutate op that requires an existing tracked file (`update`,
+    /// `update_with_splices`, `set_generations`) -- or a `remove` whose mask
+    /// matched nothing -- named a file that is not tracked. The RC-8
+    /// "must add first" / target-not-found condition.
+    #[error("file '{name}' is not tracked; add it first")]
+    NotTracked {
+        /// The selector (name or id) that matched no tracked file.
+        name: String,
+    },
+
+    /// A `remove` mask matched more than one tracked file without `force`.
+    #[error("mask '{mask}' matches {count} files; pass force to remove all: {matches}")]
+    AmbiguousRemove {
+        /// The mask that matched multiple files.
+        mask: String,
+        /// The number of files the mask matched.
+        count: usize,
+        /// A human-readable list of the matched files.
+        matches: String,
+    },
+
+    /// A caller-supplied splice in `update_with_splices` has an in-range offset
+    /// that falls in the MIDDLE of a multi-byte UTF-8 character. Distinct from
+    /// [`WalrusError::SpliceOutOfBounds`], which is an offset past the end of
+    /// the version.
+    #[error("splice at {at} does not land on a UTF-8 character boundary")]
+    SpliceNotCharBoundary {
+        /// The offset that split a multi-byte character.
+        at: usize,
+    },
+
+    /// A source encoding declared for an `add_with_encoding` call could not be
+    /// resolved to a known codec, or the input failed to decode under it
+    /// (FR-W8).
+    #[cfg(feature = "i18n")]
+    #[error("unsupported or undecodable encoding '{label}': {reason}")]
+    Encoding {
+        /// The declared encoding label (e.g. "windows-1252").
+        label: String,
+        /// Human-readable reason the encoding could not be used.
         reason: String,
     },
 

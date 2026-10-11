@@ -21,6 +21,7 @@ mod container;
 #[cfg(feature = "diff")]
 mod diff;
 mod error;
+mod invert;
 mod manifest;
 mod mutate;
 mod rebase;

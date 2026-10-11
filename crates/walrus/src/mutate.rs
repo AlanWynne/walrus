@@ -152,7 +152,7 @@ impl Archive {
 mod tests {
     use super::*;
     use crate::manifest::{Checkpoint, Manifest, TrackedFile, Variant};
-    use crate::record::{ChangeRecord, Op};
+    use crate::record::ChangeRecord;
     use crate::wchg::{Direction, WchgHeader};
     use crate::{FileId, Version};
 
@@ -172,30 +172,14 @@ mod tests {
     }
 
     /// Invert a forward history into its reverse-log equivalent (base = current,
-    /// records apply current -> original), mirroring the archive.rs fixture.
+    /// records apply current -> original), via the single production inversion
+    /// helper ([`crate::invert::invert_forward_splices`]) so there is ONE
+    /// inversion implementation, test and production alike.
     fn invert_forward_to_reverse(
         original: &[u8],
         forward: &[ChangeRecord],
     ) -> (Vec<u8>, Vec<ChangeRecord>) {
-        let mut version = original.to_vec();
-        let mut inverses = Vec::new();
-        for rec in forward {
-            if let Op::Splice {
-                at,
-                delete_len,
-                insert,
-            } = &rec.op
-            {
-                let deleted = version[*at..*at + *delete_len].to_vec();
-                let deleted_str = String::from_utf8(deleted).expect("utf-8 deleted bytes");
-                inverses.push(ChangeRecord::splice(*at, insert.len(), deleted_str));
-                let mut next = version.clone();
-                next.splice(*at..*at + *delete_len, insert.bytes());
-                version = next;
-            }
-        }
-        inverses.reverse();
-        (version, inverses)
+        crate::invert::invert_forward_splices(original, forward).expect("invert forward splices")
     }
 
     fn splice_count(records: &[ChangeRecord]) -> usize {
