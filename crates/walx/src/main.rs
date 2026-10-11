@@ -8,21 +8,19 @@
 //!   --index <n> | --version <current|original|+/-n> | --at <YYYY-MM-DDThh:mm:ssZ>
 //!
 //! The parser is hand-rolled to keep the dependency surface minimal (INV-2).
+//! The selector grammar, naming safety, and the extract/cat engines live in the
+//! shared `wal-cli-common` crate; this binary owns only dispatch, the option
+//! scan, and the usage banner.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
 
-mod args;
-mod cat;
-mod extract;
-mod mask;
-mod safety;
-
-use args::{CliError, Selector};
-use cat::CatArgs;
-use extract::ExtractArgs;
+use wal_cli_common::cat::{self, CatArgs};
+use wal_cli_common::error::CliError;
+use wal_cli_common::extract::{self, ExtractArgs};
+use wal_cli_common::selector::{self, Selector};
 
 fn main() -> ExitCode {
     match run() {
@@ -111,16 +109,16 @@ fn scan(tokens: &[String], allow_disk: bool) -> Result<Scan, CliError> {
         match name {
             "--index" => {
                 let value = take_value(name, inline, &mut iter)?;
-                args::set_selector(&mut scan.selector, args::parse_index_value(&value)?)?;
+                selector::set_selector(&mut scan.selector, selector::parse_index_value(&value)?)?;
             }
             "--version" => {
                 let value = take_value(name, inline, &mut iter)?;
-                args::set_selector(&mut scan.selector, args::parse_version_value(&value)?)?;
+                selector::set_selector(&mut scan.selector, selector::parse_version_value(&value)?)?;
             }
             "--at" => {
                 let value = take_value(name, inline, &mut iter)?;
-                let epoch = args::parse_at_utc(&value)?;
-                args::set_selector(&mut scan.selector, Selector::At(epoch))?;
+                let epoch = selector::parse_at_utc(&value)?;
+                selector::set_selector(&mut scan.selector, Selector::At(epoch))?;
             }
             "--label" => {
                 // Deferred past 0.1 (CLI-DESIGN 5.2.1): reject as usage.
@@ -184,7 +182,7 @@ fn parse_extract(tokens: &[String]) -> Result<ExtractArgs, CliError> {
     Ok(ExtractArgs {
         archive: PathBuf::from(archive),
         mask,
-        selector: args::effective_selector(scan.selector),
+        selector: selector::effective_selector(scan.selector),
         output: extract::output_dir(scan.output.as_deref()),
         force: scan.force,
         sanitize: scan.sanitize,
@@ -207,7 +205,7 @@ fn parse_cat(tokens: &[String]) -> Result<CatArgs, CliError> {
     Ok(CatArgs {
         archive: PathBuf::from(archive),
         file,
-        selector: args::effective_selector(scan.selector),
+        selector: selector::effective_selector(scan.selector),
     })
 }
 

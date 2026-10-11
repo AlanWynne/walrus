@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use walrus_fmt::{Archive, FileId};
 
-use crate::args::Selector;
 use crate::extract::reconstruct_with_fallback;
 use crate::mask;
+use crate::selector::Selector;
 
 /// Parsed inputs for one `cat` invocation.
 pub struct CatArgs {

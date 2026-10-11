@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use walrus_fmt::{Archive, FileId, Version, WalrusError};
 
-use crate::args::Selector;
 use crate::mask;
 use crate::safety::{self, NameRefusal};
+use crate::selector::Selector;
 
 /// Parsed inputs for one `extract` invocation.
 pub struct ExtractArgs {

@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 walrus-fmt = { workspace = true }
+wal-cli-common = { path = "../wal-cli-common" }
 anyhow = { workspace = true }
 
 [dev-dependencies]

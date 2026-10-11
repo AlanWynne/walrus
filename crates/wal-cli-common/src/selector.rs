@@ -1,43 +1,14 @@
-//! Hand-rolled argument parsing for the two walx subcommands and the shared
-//! version selector (CLI-DESIGN section 4, 5.2).
+//! The shared version selector and the fixed-shape UTC `--at` parser
+//! (CLI-DESIGN section 4, 5.2).
 //!
 //! The surface is tiny and fixed, so a hand parser stays leaner than clap and
-//! keeps `cargo tree -p walx` auditable (INV-2). This module owns: the
-//! mutually-exclusive version selector, the fixed-shape UTC `--at` parser, and
-//! the typed [`CliError`] carrying a return code for `main` to translate.
-
-use std::fmt;
+//! keeps the CLI's `cargo tree` auditable (INV-2). This module owns the
+//! mutually-exclusive version selector and the fixed-shape UTC `--at` parser;
+//! the typed [`crate::error::CliError`] it raises lives in `crate::error`.
 
 use walrus_fmt::Version;
 
-/// A usage/safety error carrying the process return code it maps to
-/// (CLI-DESIGN section 6). Only the codes walx raises at the arg layer appear
-/// here; richer per-file outcomes are decided in the command modules.
-#[derive(Debug, PartialEq, Eq)]
-pub struct CliError {
-    /// Human-readable reason, printed to stderr by `main`.
-    pub message: String,
-    /// The process return code (2 usage/safety for everything parsed here).
-    pub code: u8,
-}
-
-impl CliError {
-    /// Build a usage/safety error (RC 2).
-    pub fn usage(message: impl Into<String>) -> Self {
-        CliError {
-            message: message.into(),
-            code: 2,
-        }
-    }
-}
-
-impl fmt::Display for CliError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for CliError {}
+use crate::error::CliError;
 
 /// The parsed version selector, before mapping to the library [`Version`].
 /// At most one may be supplied; the default (nothing given) is `Current`.
@@ -160,8 +131,8 @@ pub fn parse_at_utc(text: &str) -> Result<i64, CliError> {
 }
 
 /// Convert a validated civil UTC date-time to epoch seconds using the
-/// days-from-civil algorithm (self-contained; walx cannot reach the library's
-/// `pub(crate)` parser). Mirrors the library's conversion.
+/// days-from-civil algorithm (self-contained; the CLI cannot reach the
+/// library's `pub(crate)` parser). Mirrors the library's conversion.
 fn civil_to_epoch(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
     // Howard Hinnant's days_from_civil: days since 1970-01-01 (UTC).
     let y = if month <= 2 { year - 1 } else { year };
