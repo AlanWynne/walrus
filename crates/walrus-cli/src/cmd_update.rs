@@ -19,10 +19,12 @@ use crate::common::{split_option, take_value};
 use crate::recurse;
 use crate::stdin_src;
 
-/// One source to update: its stored name and bytes.
+/// One source to update: its stored name, bytes, and source-file mtime UTC
+/// stamp (or the wall-clock fallback for stdin).
 struct Source {
     name: String,
     bytes: Vec<u8>,
+    ts: String,
 }
 
 /// Parsed `update` inputs.
@@ -42,7 +44,6 @@ pub fn run(tokens: &[String]) -> Result<u8> {
 
     let mut archive = Archive::open(&args.archive)
         .with_context(|| format!("opening archive {}", args.archive.display()))?;
-    let ts = clock::now_utc();
 
     for source in &sources {
         let before = archive
@@ -52,7 +53,7 @@ pub fn run(tokens: &[String]) -> Result<u8> {
         // update_at surfaces NotTracked for an absent file -> mapped to RC 8 by
         // main. The archive is not written on error, so the batch is atomic.
         archive
-            .update_at(&source.name, &source.bytes, args.generations, &ts)
+            .update_at(&source.name, &source.bytes, args.generations, &source.ts)
             .with_context(|| format!("updating '{}'", source.name))?;
         if archive
             .file(&source.name)
@@ -81,6 +82,7 @@ fn collect_sources(args: &UpdateArgs) -> Result<Vec<Source>> {
         return Ok(vec![Source {
             name: stdin.name,
             bytes: stdin.bytes,
+            ts: clock::now_utc(),
         }]);
     }
 
@@ -98,6 +100,7 @@ fn collect_sources(args: &UpdateArgs) -> Result<Vec<Source>> {
                 out.push(Source {
                     name: c.name,
                     bytes: c.bytes,
+                    ts: c.ts,
                 });
             }
         } else {
@@ -106,6 +109,7 @@ fn collect_sources(args: &UpdateArgs) -> Result<Vec<Source>> {
             out.push(Source {
                 name: stored_name(arg),
                 bytes,
+                ts: clock::file_mtime_utc(path),
             });
         }
     }

@@ -19,6 +19,20 @@ pub fn now_utc() -> String {
     format_epoch_utc(secs)
 }
 
+/// The source file's last-modified instant formatted as `YYYY-MM-DDThh:mm:ssZ`.
+/// Falls back to [`now_utc`] when the mtime is unavailable (platform/FS quirk)
+/// or pre-epoch. Reading the FILESYSTEM mtime is CLI-only; the `walrus-fmt`
+/// library stays filesystem-free and receives only the formatted string.
+pub fn file_mtime_utc(path: &std::path::Path) -> String {
+    match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(mtime) => match mtime.duration_since(UNIX_EPOCH) {
+            Ok(d) => format_epoch_utc(d.as_secs() as i64),
+            Err(_) => now_utc(), // pre-epoch mtime: fall back
+        },
+        Err(_) => now_utc(), // mtime unreadable: fall back
+    }
+}
+
 /// Format epoch seconds as the fixed UTC shape `YYYY-MM-DDThh:mm:ssZ`.
 fn format_epoch_utc(epoch: i64) -> String {
     let days = epoch.div_euclid(86_400);
@@ -67,5 +81,32 @@ mod tests {
         assert!(s.ends_with('Z'), "trailing Z (UTC)");
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
+    }
+
+    #[test]
+    fn file_mtime_utc_formats_a_known_file_mtime() {
+        use std::time::Duration;
+        // Write a tempfile and set a KNOWN mtime; assert the formatted string
+        // matches the SAME epoch routed through format_epoch_utc.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("stamp.txt");
+        std::fs::write(&path, b"x").expect("write tempfile");
+        let epoch = 1_791_735_524i64; // 2026-10-11T16:18:44Z
+        let mtime = UNIX_EPOCH + Duration::from_secs(epoch as u64);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open for set_modified");
+        f.set_modified(mtime).expect("set mtime");
+        drop(f);
+        assert_eq!(file_mtime_utc(&path), format_epoch_utc(epoch));
+    }
+
+    #[test]
+    fn file_mtime_utc_falls_back_for_a_missing_path() {
+        let missing = std::path::Path::new("definitely-no-such-file-xyzzy.txt");
+        let s = file_mtime_utc(missing);
+        assert_eq!(s.len(), 20, "fallback is a fixed-shape now_utc stamp");
+        assert!(s.ends_with('Z'), "trailing Z (UTC)");
     }
 }

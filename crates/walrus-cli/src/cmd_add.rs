@@ -20,10 +20,12 @@ use crate::common::{split_option, take_value};
 use crate::recurse;
 use crate::stdin_src;
 
-/// One source to add: its stored name and bytes.
+/// One source to add: its stored name, bytes, and source-file mtime UTC stamp
+/// (or the wall-clock fallback for stdin).
 struct Source {
     name: String,
     bytes: Vec<u8>,
+    ts: String,
 }
 
 /// Parsed `add` inputs.
@@ -43,7 +45,6 @@ pub fn run(tokens: &[String]) -> Result<u8> {
     let sources = collect_sources(&args)?;
 
     let mut archive = open_or_create(&args)?;
-    let ts = clock::now_utc();
 
     for source in &sources {
         // A file ALREADY tracked whose content is byte-identical records no new
@@ -57,9 +58,17 @@ pub fn run(tokens: &[String]) -> Result<u8> {
                 &source.bytes,
                 args.generations,
                 args.direction,
-                &ts,
+                &source.ts,
             )
             .with_context(|| format!("adding '{}'", source.name))?;
+        // A fresh create (count 0) records no splice, so attributes.mtime is the
+        // only LastWriteTime a single-version file can surface. Reuse the SAME
+        // source.ts (no second mtime read); set it ONLY on first create.
+        if !was_tracked {
+            archive
+                .set_attributes_mtime(&source.name, &source.ts)
+                .with_context(|| format!("stamping mtime for '{}'", source.name))?;
+        }
         if was_tracked && count_of(&archive, &source.name) == before {
             eprintln!("walrus: {}: no change, not versioned", source.name);
         }
@@ -88,6 +97,7 @@ fn collect_sources(args: &AddArgs) -> Result<Vec<Source>> {
         return Ok(vec![Source {
             name: stdin.name,
             bytes: stdin.bytes,
+            ts: clock::now_utc(),
         }]);
     }
 
@@ -105,6 +115,7 @@ fn collect_sources(args: &AddArgs) -> Result<Vec<Source>> {
                 out.push(Source {
                     name: c.name,
                     bytes: c.bytes,
+                    ts: c.ts,
                 });
             }
         } else {
@@ -113,6 +124,7 @@ fn collect_sources(args: &AddArgs) -> Result<Vec<Source>> {
             out.push(Source {
                 name: stored_name(arg),
                 bytes,
+                ts: clock::file_mtime_utc(path),
             });
         }
     }

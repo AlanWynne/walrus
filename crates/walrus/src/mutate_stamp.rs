@@ -65,6 +65,33 @@ impl Archive {
         validate_ts(ts)?;
         self.update_inner(name, bytes, generations, Some(ts))
     }
+
+    /// Record a tracked file's source-file last-modified stamp into its manifest
+    /// `attributes.mtime` (FORMAT.md section 3). Metadata only: the library stays
+    /// clock-free and filesystem-free -- `mtime` is a pre-formatted UTC string the
+    /// CLI supplies, exactly like the `ts` seam. Sets ONLY `attributes.mtime`; no
+    /// other attribute, record, base, or version is touched, so it never perturbs
+    /// reconstruction (FORMAT.md section 5 / INV-3).
+    ///
+    /// # Errors
+    /// Returns [`WalrusError::NotTracked`] when `name` matches no tracked file.
+    pub fn set_attributes_mtime(&mut self, name: &str, mtime: &str) -> Result<()> {
+        let id = self
+            .id_for_selector(name)
+            .ok_or_else(|| WalrusError::NotTracked {
+                name: name.to_string(),
+            })?;
+        let tracked = self
+            .manifest_mut()
+            .files
+            .iter_mut()
+            .find(|f| f.id == id)
+            .ok_or_else(|| WalrusError::NotTracked {
+                name: name.to_string(),
+            })?;
+        tracked.attributes.mtime = Some(mtime.to_string());
+        Ok(())
+    }
 }
 
 /// Validate a caller-supplied record timestamp against the fixed UTC shape
@@ -157,6 +184,28 @@ mod tests {
         a.add_at("doc.txt", b"hello", None, None, ts)
             .expect("no-op stamped save is ok");
         assert!(a.records("doc.txt").expect("records").is_empty());
+    }
+
+    #[test]
+    fn set_attributes_mtime_sets_only_the_mtime_attribute() {
+        let ts = "2026-10-11T16:18:44Z";
+        let mut a = empty_archive(Variant::Wal);
+        a.add("doc.txt", b"hello", None, None).expect("create");
+        a.set_attributes_mtime("doc.txt", ts).expect("set mtime");
+        let tracked = a.file("doc.txt").expect("tracked");
+        assert_eq!(tracked.attributes.mtime.as_deref(), Some(ts));
+        // Only mtime is touched: size and mode stay as the default (None).
+        assert!(tracked.attributes.size.is_none(), "size untouched");
+        assert!(tracked.attributes.mode.is_none(), "mode untouched");
+    }
+
+    #[test]
+    fn set_attributes_mtime_on_untracked_returns_not_tracked() {
+        let mut a = empty_archive(Variant::Wal);
+        let err = a
+            .set_attributes_mtime("nope", "2026-10-11T16:18:44Z")
+            .expect_err("absent name must error");
+        assert!(matches!(err, WalrusError::NotTracked { .. }));
     }
 
     #[test]

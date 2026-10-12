@@ -12,12 +12,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// A collected source file: its stored archive name and its bytes.
+/// A collected source file: its stored archive name, bytes, and source-file
+/// mtime UTC stamp.
 pub struct Collected {
     /// The stored name (`<root-name>/<relative>`, `/`-separated).
     pub name: String,
     /// The file's bytes.
     pub bytes: Vec<u8>,
+    /// The file's last-modified instant as a fixed-shape UTC string.
+    pub ts: String,
 }
 
 /// Walk `root` (a directory) and collect every regular file beneath it in
@@ -44,9 +47,11 @@ pub fn collect_dir(root: &Path) -> Result<Vec<Collected>> {
         let disk_path = segments.iter().fold(root.to_path_buf(), |p, s| p.join(s));
         let bytes = std::fs::read(&disk_path)
             .with_context(|| format!("reading {}", disk_path.display()))?;
+        let ts = crate::clock::file_mtime_utc(&disk_path);
         out.push(Collected {
             name: format!("{root_name}/{rel}"),
             bytes,
+            ts,
         });
     }
     Ok(out)
