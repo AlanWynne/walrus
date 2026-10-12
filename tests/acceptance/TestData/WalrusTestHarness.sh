@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# ============================================================================
+# Walrus manual round-trip harness (bash port of WalrusTestHarness.bat).
+# Back up a real source tree into a .wal archive, extract it back out, and
+# byte-compare the two trees, plus variant/conversion/version/error checks.
+#
+# Round-trip is: copy real source -> walrus add -R -> walrus extract -> cmp.
+# A clean compare ends with "trees are identical" (compareDir.sh exits 0).
+#
+# walrus roots stored names at the SOURCE dir's last path segment, so
+# `extract -o <dir>` reproduces the tree under <dir>/<source-basename>/.
+# Here the source is always $BASE (segment "Base"), so every extracted tree
+# lands under <work>/Base and each compare targets that sub-path.
+#
+# A Markdown PASS/FAIL report is written to $REPORT. The console shows the
+# full step-by-step chatter; the report is the clean summary ledger.
+# ============================================================================
+set -u
+
+# -- 0. Paths --------------------------------------------------------------
+# REPO defaults to the repository root inferred from this script's location
+# (tests/acceptance/TestData -> three levels up), but can be overridden.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${REPO:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+TEMPDIR="${TEMPDIR:-${TMPDIR:-/tmp}/Walrus-Temp-TestData}"
+BASE="$TEMPDIR/Base"
+WORK0000="$TEMPDIR/Work0000"
+WORK0001="$TEMPDIR/Work0001"
+WORK0002="$TEMPDIR/Work0002"
+WORK0003="$TEMPDIR/Work0003"
+WORK0004="$TEMPDIR/Work0004"
+
+# WALRUS defaults to the debug build; override to test a release binary.
+WALRUS="${WALRUS:-$REPO/target/debug/walrus}"
+REPORT="$TEMPDIR/WalrusTestHarness-Report.md"
+COMPARE="$SCRIPT_DIR/compareDir.sh"
+
+PASS=0
+FAIL=0
+
+# === report helpers =======================================================
+# report <actual-rc> <expected-rc> <step> <description> <expectation>
+report() {
+    local actual="$1" expected="$2" step="$3" desc="$4" exp="$5"
+    if [ "$actual" = "$expected" ]; then
+        PASS=$((PASS + 1))
+        echo "[$step] PASS - $desc  [expected: $exp]"
+        printf '| %s | **PASS** | %s | %s |\n' "$step" "$desc" "$exp" >> "$REPORT"
+    else
+        FAIL=$((FAIL + 1))
+        echo "[$step] FAIL - $desc  [expected: $exp; got rc=$actual]"
+        printf '| %s | **FAIL** | %s | %s -- got rc=%s |\n' "$step" "$desc" "$exp" "$actual" >> "$REPORT"
+    fi
+}
+
+# reportnz <actual-rc> <step> <description> <expectation>
+# Passes when the actual return code is NON-ZERO (a clean, reported failure).
+reportnz() {
+    local actual="$1" step="$2" desc="$3" exp="$4"
+    if [ "$actual" != "0" ]; then
+        PASS=$((PASS + 1))
+        echo "[$step] PASS - $desc  [expected: $exp; got rc=$actual]"
+        printf '| %s | **PASS** | %s | %s -- got rc=%s |\n' "$step" "$desc" "$exp" "$actual" >> "$REPORT"
+    else
+        FAIL=$((FAIL + 1))
+        echo "[$step] FAIL - $desc  [expected: $exp; got rc=0]"
+        printf '| %s | **FAIL** | %s | %s -- got rc=0 |\n' "$step" "$desc" "$exp" >> "$REPORT"
+    fi
+}
+
+# manual <step> <description> <what-to-verify>
+manual() {
+    echo "[$1] MANUAL - $2"
+    printf '| %s | _MANUAL_ | %s | VERIFY: %s |\n' "$1" "$2" "$3" >> "$REPORT"
+}
+
+# === steps =================================================================
+
+# -- 1. Cleanup before start -----------------------------------------------
+echo
+echo "[STEP 1] Cleanup: wiping and recreating $TEMPDIR"
+rm -rf "$TEMPDIR"
+mkdir -p "$TEMPDIR"
+cd "$TEMPDIR"
+
+# Initialise the Markdown report (summary ledger, separate from full stdout).
+{
+    echo "# Walrus Test Harness Report"
+    echo
+    echo "- **Generated:** $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "- **Binary:** \`$WALRUS\`"
+    echo
+    echo "| Step | Result | Test | Expectation |"
+    echo "| ---- | ------ | ---- | ----------- |"
+} > "$REPORT"
+
+# -- 2. Rebuild the source tree to back up ---------------------------------
+# Copy only real source (*.md, *.rs) and EXCLUDE build output, nested
+# worktrees, git metadata, .gate logs, node_modules, and this harness's own
+# TestData area (so the harness never re-ingests a previous run's output).
+echo
+echo "[STEP 2] Building source tree: copy *.md/*.rs from $REPO to $BASE"
+mkdir -p "$BASE"
+( cd "$REPO" && find . \
+    \( -path './target' -o -path './.worktrees' -o -path './.git' \
+       -o -path './.gate' -o -path './node_modules' \
+       -o -path './tests/acceptance/TestData' \) -prune -o \
+    -type f \( -name '*.md' -o -name '*.rs' \) -print0 \
+  | while IFS= read -r -d '' f; do
+        mkdir -p "$BASE/$(dirname "$f")"
+        cp "$f" "$BASE/$f"
+    done )
+
+# -- 3. Create a brand new .wal archive from BASE --------------------------
+echo
+echo "[STEP 3] Creating archive: walrus add $WORK0000.wal $BASE --wal -R"
+mkdir -p "$WORK0000"
+"$WALRUS" add "$WORK0000.wal" "$BASE" --wal -R
+
+# -- 4. Extract the new archive back out -----------------------------------
+echo
+echo "[STEP 4] Extracting archive: walrus extract $WORK0000.wal -o $WORK0000"
+"$WALRUS" extract "$WORK0000.wal" -o "$WORK0000"
+
+# -- 5. Byte-compare original BASE vs the extracted tree -------------------
+echo
+echo "[STEP 5] Round-trip check: compare BASE against the freshly extracted tree"
+"$COMPARE" "$BASE" "$WORK0000/Base"
+report $? 0 "STEP 5" "Round-trip: BASE vs freshly extracted tree" "No Difference"
+
+# -- 6. Re-add the SAME source (BASE) a second time (no-op) ----------------
+echo
+echo "[STEP 6] No-op re-add: walrus add $WORK0000.wal $BASE --wal -R (expect no new version)"
+"$WALRUS" add "$WORK0000.wal" "$BASE" --wal -R
+
+# -- 7. Copy the archive, re-add BASE to the copy, compare the two archives -
+echo
+echo "[STEP 7] Determinism check: copy archive, re-add BASE to the copy, compare both .wal files"
+cp -f "$WORK0000.wal" "$WORK0001.wal"
+cmp -s "$WORK0000.wal" "$WORK0001.wal"
+report $? 0 "STEP 7a" "Archive byte-identical after copy (pre re-add)" "No Difference"
+
+"$WALRUS" add "$WORK0001.wal" "$BASE" --wal -R
+cmp -s "$WORK0000.wal" "$WORK0001.wal"
+report $? 0 "STEP 7b" "Archive byte-identical after no-op re-add (determinism)" "No Difference"
+
+# -- 8. Extract the copy and compare it to BASE ----------------------------
+echo
+echo "[STEP 8] Extract the copy and compare it to BASE"
+"$WALRUS" extract "$WORK0001.wal" -o "$WORK0001"
+"$COMPARE" "$BASE" "$WORK0001/Base"
+report $? 0 "STEP 8" "Extract of the copy archive matches BASE" "No Difference"
+
+# -- 9. Mutate SOME files in the extracted WORK0000 tree -------------------
+# Only rewrite files that contain OLD_TEXT, so some change and some do not.
+OLD_TEXT="tar"
+NEW_TEXT="This old tar went to a bar"
+echo
+echo "[STEP 9] Mutating files under $WORK0000/Base: replacing '$OLD_TEXT' where present"
+while IFS= read -r -d '' f; do
+    if grep -q "$OLD_TEXT" "$f" 2>/dev/null; then
+        # Use a temp file so partial writes never corrupt the source on error.
+        sed "s/$OLD_TEXT/$NEW_TEXT/g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    fi
+done < <(find "$WORK0000/Base" -type f -print0)
+
+# -- 10. Confirm the mutated tree now differs from BASE --------------------
+echo
+echo "[STEP 10] Confirm the mutated tree now differs from BASE"
+"$COMPARE" "$BASE" "$WORK0000/Base"
+report $? 1 "STEP 10" "Mutated tree now differs from BASE" "Differences"
+
+# -- 11. Add the mutated tree as a new version, extract, compare -----------
+# Extract into a FRESH dir ($WORK0001-cur): $WORK0001 already holds step 8's
+# pristine extract; re-extracting over a populated dir can leave stale files.
+echo
+echo "[STEP 11] Add mutated tree as a new version, extract, compare current vs mutated"
+"$WALRUS" add "$WORK0001.wal" "$WORK0000/Base" --wal -R
+"$WALRUS" extract "$WORK0001.wal" -o "$WORK0001-cur"
+"$COMPARE" "$WORK0000/Base" "$WORK0001-cur/Base"
+report $? 0 "STEP 11" "New version current == mutated tree" "No Difference"
+
+# -- 12. Extract the ORIGINAL version and compare it to BASE ---------------
+echo
+echo "[STEP 12] Version addressing: extract --version original, compare to pristine BASE"
+"$WALRUS" extract "$WORK0001.wal" -o "$WORK0002" --version original
+"$COMPARE" "$BASE" "$WORK0002/Base"
+report $? 0 "STEP 12" "Version 'original' restores pristine BASE" "No Difference"
+
+# -- 13. .wbl (reverse) variant round-trip ---------------------------------
+echo
+echo "[STEP 13] .wbl variant round-trip: walrus add --wbl, extract, compare to BASE"
+"$WALRUS" add "$WORK0003.wbl" "$BASE" --wbl -R
+"$WALRUS" extract "$WORK0003.wbl" -o "$WORK0003"
+"$COMPARE" "$BASE" "$WORK0003/Base"
+report $? 0 "STEP 13" ".wbl reverse-variant round-trip matches BASE" "No Difference"
+
+# -- 14. .wal to .wbl conversion round-trip --------------------------------
+echo
+echo "[STEP 14] Conversion round-trip: walrus convert --to wbl, extract, compare to BASE"
+"$WALRUS" convert "$WORK0000.wal" --to wbl -o "$WORK0004.wbl"
+"$WALRUS" extract "$WORK0004.wbl" -o "$WORK0004"
+"$COMPARE" "$BASE" "$WORK0004/Base"
+report $? 0 "STEP 14" ".wal to .wbl conversion round-trip matches BASE" "No Difference"
+
+# -- 15. Query listing (terse + long) -- visual check ----------------------
+echo
+echo "[STEP 15] Query listing: terse then long (-l) against $WORK0001.wal"
+echo " --- walrus query $WORK0001.wal  (terse, ls-style) ---"
+"$WALRUS" query "$WORK0001.wal"
+echo " --- walrus query $WORK0001.wal -l  (long, aligned table) ---"
+"$WALRUS" query "$WORK0001.wal" -l
+manual "STEP 15" "Query terse + long render" "In stdout, confirm terse is one relative name per line, and -l shows an aligned 'Versions LastWriteTime Bytes Name' table with populated LastWriteTime and a nonzero Versions count on changed files."
+
+# -- 16. Single-file add stored under its basename -------------------------
+echo
+echo "[STEP 16] Single-file add: store a lone file under its basename"
+"$WALRUS" add "$WORK0000-single.wal" "$BASE/README.md" --wal
+"$WALRUS" query "$WORK0000-single.wal"
+# A full relative path would read "Base/README.md"; a bare "README.md" line
+# confirms basename-only storage. grep -Fx = fixed-string, whole-line match.
+if "$WALRUS" query "$WORK0000-single.wal" | grep -Fxq "README.md"; then
+    report 0 0 "STEP 16" "Single-file add stored under basename only" "query shows literal 'README.md'"
+else
+    report 1 0 "STEP 16" "Single-file add stored under basename only" "query shows literal 'README.md'"
+fi
+
+# -- 17. Error handling: directory without -R is a usage error (RC 2) ------
+echo
+echo "[STEP 17] Error check: add a directory WITHOUT -R (expect refusal, RC 2)"
+"$WALRUS" add "$WORK0000-nodir.wal" "$BASE" --wal
+RC17=$?
+report "$RC17" 2 "STEP 17" "Add a directory without -R is refused" "RC 2 (usage error)"
+
+# -- 18. Error handling: query a missing archive fails cleanly -------------
+echo
+echo "[STEP 18] Error check: query a NON-EXISTENT archive (expect clean non-zero RC)"
+"$WALRUS" query "$TEMPDIR/does-not-exist.wal"
+RC18=$?
+reportnz "$RC18" "STEP 18" "Query a missing archive fails cleanly" "non-zero RC, no crash"
+
+# -- 90. Report summary ----------------------------------------------------
+echo
+echo "============================================================"
+echo " Test harness complete.  PASS=$PASS  FAIL=$FAIL"
+echo " Full report: $REPORT"
+echo "============================================================"
+{
+    echo
+    echo "## Totals"
+    echo
+    echo "- **PASS:** $PASS"
+    echo "- **FAIL:** $FAIL"
+    if [ "$FAIL" -gt 0 ]; then
+        echo "- **Overall:** FAIL"
+    else
+        echo "- **Overall:** PASS"
+    fi
+} >> "$REPORT"
+cat "$REPORT"
+
+# -- 99. (optional) cleanup ------------------------------------------------
+# rm -rf "$TEMPDIR"
+
+# Exit non-zero if any automated check failed (MANUAL steps do not count).
+[ "$FAIL" -eq 0 ]

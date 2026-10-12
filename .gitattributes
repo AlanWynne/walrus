@@ -11,6 +11,8 @@
 *.yaml  text eol=lf
 *.txt   text eol=lf
 *.json  text eol=lf
+*.sh    text eol=lf
+*.bat   text eol=crlf
 
 # Binary artefacts: never normalise or diff as text.
 *.wal   binary
