@@ -34,6 +34,15 @@ use crate::view::{self, Renderer};
 #[path = "app_mutate.rs"]
 mod app_mutate;
 
+// The pure app-shell view helpers (renderer selection for the active file,
+// per-file document metadata, the status-bar renderer label) live in a sibling
+// module split out so `app.rs` stays under the 400 non-test-line standard
+// (NFR-1). Re-exported into this module's scope so both this shell and
+// `app_mutate` (via `super::navigator_renderer`) resolve them unchanged.
+#[path = "app_view.rs"]
+mod app_view;
+use app_view::{document_name_and_mime, navigator_renderer, renderer_label};
+
 /// The Walker application state.
 pub struct WalkerApp {
     player: Option<Player>,
@@ -213,27 +222,6 @@ impl WalkerApp {
     }
 }
 
-/// The renderer for the navigator's active file, chosen through the seam.
-///
-/// Falls back to [`Renderer::Text`] when there is no active selection.
-fn navigator_renderer(source: &dyn HistorySource, navigator: &NavigatorState) -> Renderer {
-    match navigator.active() {
-        Some(active) => view::present::select_renderer_for(source, active),
-        None => Renderer::Text,
-    }
-}
-
-/// The document name and MIME for display and renderer selection.
-///
-/// Document metadata is per-file now; the single-document model keeps it on the
-/// first tracked file. Falls back to sensible defaults for an empty manifest.
-fn document_name_and_mime(manifest: &walrus_fmt::Manifest) -> (String, String) {
-    match manifest.files.first() {
-        Some(file) => (file.name.clone(), file.mime.clone()),
-        None => (String::new(), "application/octet-stream".to_string()),
-    }
-}
-
 impl eframe::App for WalkerApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.theme_applied {
@@ -402,16 +390,5 @@ impl eframe::App for WalkerApp {
                 });
             }
         });
-    }
-}
-
-/// A short label for a renderer, for the status bar.
-fn renderer_label(renderer: &Renderer) -> &'static str {
-    match renderer {
-        Renderer::Html => "HTML",
-        Renderer::Markdown => "Markdown",
-        Renderer::Csv => "CSV",
-        Renderer::Code(_) => "Code",
-        Renderer::Text => "Text",
     }
 }
