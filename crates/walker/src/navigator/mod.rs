@@ -24,10 +24,13 @@ use crate::import::{FilePicker, ImportOutcome, ImportState};
 use crate::source::{FileRef, HistorySource};
 
 pub mod bloat;
+pub mod controls;
+mod controls_ui;
 mod external;
 mod internal;
 
 use self::bloat::BloatThresholds;
+use self::controls::{FileAction, PendingBatchRemove};
 
 /// The navigator's selection model: the active file (AC2) and the multi-select
 /// set (AC3).
@@ -44,6 +47,9 @@ pub struct NavigatorState {
     /// The overridable FR-K7 bloat thresholds the internal pane reads instead
     /// of inline literals. Defaults to the FR-K7 starting values (2.0/5.0/50).
     bloat_thresholds: BloatThresholds,
+    /// The FR-K6 batch-remove confirmation gate: a batch remove of two or more
+    /// files parks its ids here until the user explicitly confirms (AC2).
+    pending_batch_remove: PendingBatchRemove,
 }
 
 impl NavigatorState {
@@ -88,6 +94,23 @@ impl NavigatorState {
     pub fn bloat_thresholds(&self) -> &BloatThresholds {
         &self.bloat_thresholds
     }
+
+    /// The multi-select ids in ascending order, so a batch intent carries the
+    /// exact selected set (FR-K6).
+    pub fn selected_ids(&self) -> Vec<usize> {
+        self.selected.iter().copied().collect()
+    }
+
+    /// The FR-K6 batch-remove confirmation gate (read-only).
+    pub fn pending_batch_remove(&self) -> &PendingBatchRemove {
+        &self.pending_batch_remove
+    }
+
+    /// The FR-K6 batch-remove confirmation gate (mutable), for the control bar
+    /// to park/confirm/cancel a pending batch remove.
+    pub fn pending_batch_remove_mut(&mut self) -> &mut PendingBatchRemove {
+        &mut self.pending_batch_remove
+    }
 }
 
 /// What the navigator asked the app to do this frame.
@@ -110,6 +133,9 @@ pub struct NavigatorAction {
     /// a row's "History" button was clicked. Purely additive, mirrors
     /// `activated`.
     pub history_for: Option<FileRef>,
+    /// A per-file or batch control intent (FR-K6) the app should apply this
+    /// frame through the concrete `WalrusSource`, when a control was activated.
+    pub file_action: Option<FileAction>,
 }
 
 /// Lay out both navigator panes: the internal file list (top) and the external
@@ -127,6 +153,10 @@ pub fn panels(
     state: &mut NavigatorState,
 ) -> NavigatorAction {
     let mut action = internal::internal_pane(ui, source, state);
+    ui.separator();
+    // FR-K6: the per-file control panel for the active file. Renders only when
+    // a file is active; emits a `FileAction` onto the frame's action.
+    controls_ui::file_controls_panel(ui, source, state, &mut action);
     ui.separator();
     external::external_pane(ui, source, picker, import, &mut action);
     action
@@ -187,6 +217,28 @@ mod tests {
         assert_eq!(
             state.bloat_thresholds().floor_index_count,
             defaults.floor_index_count
+        );
+    }
+
+    #[test]
+    fn selected_ids_returns_the_toggled_set_in_ascending_order() {
+        let mut state = NavigatorState::default();
+        state.toggle(3);
+        state.toggle(1);
+        state.toggle(2);
+        assert_eq!(
+            state.selected_ids(),
+            vec![1, 2, 3],
+            "selected_ids returns the multi-select set sorted ascending"
+        );
+    }
+
+    #[test]
+    fn a_fresh_state_has_no_pending_batch_remove() {
+        let state = NavigatorState::default();
+        assert!(
+            !state.pending_batch_remove().is_pending(),
+            "a fresh navigator state has no batch remove awaiting confirmation"
         );
     }
 

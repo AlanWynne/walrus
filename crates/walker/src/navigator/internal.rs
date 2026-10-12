@@ -87,7 +87,10 @@ pub fn internal_pane(
     }
 
     ui.separator();
-    batch_action_bar(ui, state);
+    // FR-K6: the batch-action bar now wires export/condense/remove with the
+    // explicit batch-remove confirmation (controls_ui::batch_bar), replacing the
+    // FR-K4 enabled-affordance-only stub.
+    super::controls_ui::batch_bar(ui, state, &mut action);
 
     action
 }
@@ -103,18 +106,4 @@ fn row_label(name: &str, info: &FileInfo) -> String {
         "{name}  --  {} versions, gen {generations}, {} bytes",
         info.index_size, info.size_bytes
     )
-}
-
-/// Draw the batch-action affordance. The button is ENABLED only when two or
-/// more files are selected (AC3); the actual export/remove/condense operations
-/// are FR-K6.
-fn batch_action_bar(ui: &mut egui::Ui, state: &NavigatorState) {
-    let count = state.selected_count();
-    let enabled = state.batch_enabled();
-    // TODO(FR-K6): wire export/remove/condense batch ops to this button; it is a
-    // disabled-or-enabled affordance only in FR-K4.
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(format!("Batch actions ({count})")),
-    );
 }

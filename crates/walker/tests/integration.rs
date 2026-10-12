@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 use walrus_fmt::export::{self, ExportFormat};
-use walrus_fmt::{Version, WalrusFile};
+use walrus_fmt::{Archive, FileId, Version};
 
 use walker::export_ui;
 use walker::view::{select_renderer, Renderer};
@@ -29,15 +29,14 @@ fn story_path() -> PathBuf {
 #[test]
 fn story_wal_reconstructs_selects_text_and_exports_every_offered_format() {
     let path = story_path();
-    let file = WalrusFile::open(&path).expect("the narrated demo .wal opens");
+    let archive = Archive::open(&path).expect("the narrated demo .wal opens");
 
     // The demo's document mime is text/plain -> the Text (or Code) path.
-    // Document metadata is per-file now; the single-document demo keeps it on
-    // the first tracked file.
-    let doc = file
-        .manifest()
-        .files
-        .first()
+    // Metadata is per-file in the multi-file layout; the narrated demo tracks a
+    // single document, so read it from the first tracked file.
+    let doc = archive
+        .files()
+        .next()
         .expect("the demo manifest tracks one file")
         .clone();
     assert_eq!(
@@ -50,12 +49,12 @@ fn story_wal_reconstructs_selects_text_and_exports_every_offered_format() {
         "a text/plain document selects the Text or Code path, got {renderer:?}"
     );
 
-    // Reconstruct a chosen version (the head) to export.
-    let len = file.len();
-    let chosen = Version::Index(len);
-    let bytes = file
-        .reconstruct(chosen)
-        .expect("the head version reconstructs");
+    // Reconstruct the CURRENT version (index 0 in the direction-aware model) to
+    // export. The file is addressed by its stable FileId.
+    let file_id = FileId::from(doc.id.as_str());
+    let bytes = archive
+        .reconstruct(&file_id, Version::Index(0))
+        .expect("the current version reconstructs");
     assert!(!bytes.is_empty(), "the reconstructed version is non-empty");
 
     // Every offered format must export with a well-formed result.

@@ -26,6 +26,14 @@ use crate::theme::{self, ThemeMode};
 use crate::transport;
 use crate::view::{self, Renderer};
 
+// The FR-K6 per-file + batch control handlers (apply a `FileAction` through the
+// concrete `WalrusSource` and refresh), plus the FR-K5 import helpers and the
+// FR-K9 history-report save, live in a sibling module split out so `app.rs`
+// stays under the 400 non-test-line standard (NFR-1). `app` is a file module,
+// so the child is declared with an explicit `#[path]`.
+#[path = "app_mutate.rs"]
+mod app_mutate;
+
 /// The Walker application state.
 pub struct WalkerApp {
     player: Option<Player>,
@@ -58,6 +66,9 @@ pub struct WalkerApp {
     theme_applied: bool,
     /// The file whose FR-K9 history view is currently open, if any.
     history_file: Option<crate::source::FileRef>,
+    /// The path the open archive was loaded from, if any. The FR-K6 mutate
+    /// controls persist back to this path transactionally.
+    path: Option<std::path::PathBuf>,
 }
 
 impl Default for WalkerApp {
@@ -75,6 +86,7 @@ impl Default for WalkerApp {
             theme_mode: ThemeMode::default(),
             theme_applied: false,
             history_file: None,
+            path: None,
         }
     }
 }
@@ -113,6 +125,9 @@ impl WalkerApp {
                             self.renderer = navigator_renderer(&source, &self.navigator);
                         }
                         self.source = Some(source);
+                        // Remember the path so the FR-K6 mutate controls can
+                        // persist back to it transactionally.
+                        self.path = Some(path.clone());
                     }
                     Err(e) => {
                         self.source = None;
@@ -165,43 +180,6 @@ impl WalkerApp {
         self.source.as_ref().map(|s| s as &dyn HistorySource)
     }
 
-    /// Apply a resolved FR-K5 import through the concrete source, then refresh
-    /// the navigator list and the active selection so the new/updated file is
-    /// shown. Sets a status string on success or failure.
-    ///
-    /// The byte-mutation + transactional write go through the `walrus_fmt`
-    /// mutate API (`Archive::add`, FR-W7), merged on this branch.
-    fn apply_import(&mut self, outcome: crate::import::ImportOutcome) {
-        if self.source.is_none() {
-            return;
-        }
-        let target = outcome.resolution.target_name().to_string();
-        let source = self.source.as_mut().expect("source is Some");
-        let result = source.import(&outcome.resolution, &outcome.bytes, &outcome.path);
-        match result {
-            Ok(()) => {
-                self.status = format!("Imported {target}");
-                self.refresh_after_import(&target);
-            }
-            Err(e) => {
-                self.status = format!("Import of {target} failed: {e}");
-            }
-        }
-    }
-
-    /// Re-select the imported/updated file so the navigator list and the viewer
-    /// binding reflect it after a successful mutate (AC1 list refresh).
-    fn refresh_after_import(&mut self, name: &str) {
-        if let Some(source) = self.source.as_ref() {
-            if let Some(file) = source.files().into_iter().find(|f| f.name() == name) {
-                self.navigator.select(&file);
-            }
-        }
-        if let Some(source) = self.source() {
-            self.renderer = navigator_renderer(source, &self.navigator);
-        }
-    }
-
     /// Render the FR-K9 history view for the open file, if any, and run the
     /// `rfd` save when the panel yields an export intent.
     ///
@@ -222,7 +200,7 @@ impl WalkerApp {
             export_markdown = action.export_markdown;
         });
         if let Some(markdown) = export_markdown {
-            self.status = save_history_report(&file, &markdown);
+            self.status = app_mutate::save_history_report(&file, &markdown);
         }
     }
 
@@ -242,28 +220,6 @@ fn navigator_renderer(source: &dyn HistorySource, navigator: &NavigatorState) ->
     match navigator.active() {
         Some(active) => view::present::select_renderer_for(source, active),
         None => Renderer::Text,
-    }
-}
-
-/// Open the native save dialog and write the FR-K9 Markdown history report,
-/// returning a status string (success/cancel/error) -- same pattern as
-/// `export_ui::run_export`.
-///
-/// MANUAL: the `rfd` save dialog is a real OS dialog a headless harness cannot
-/// drive; the report STRING is produced and tested by `history_view`.
-fn save_history_report(file: &crate::source::FileRef, markdown: &str) -> String {
-    let stem = file
-        .name()
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(file.name());
-    let suggested = format!("{stem}-history.md");
-    let Some(path) = rfd::FileDialog::new().set_file_name(&suggested).save_file() else {
-        return "History export cancelled.".to_string();
-    };
-    match std::fs::write(&path, markdown.as_bytes()) {
-        Ok(()) => format!("Exported history report to {}", path.display()),
-        Err(e) => format!("History export write failed: {e}"),
     }
 }
 
@@ -340,6 +296,7 @@ impl eframe::App for WalkerApp {
             let mut import_outcome = None;
             let mut import_error = None;
             let mut history_for = None;
+            let mut file_action = None;
             let picker = RfdPicker;
             egui::Panel::left("navigator").show(ui, |ui| {
                 let source = self.source.as_ref().expect("source is Some") as &dyn HistorySource;
@@ -349,6 +306,7 @@ impl eframe::App for WalkerApp {
                 import_outcome = action.import;
                 import_error = action.import_error;
                 history_for = action.history_for;
+                file_action = action.file_action;
             });
             if let Some(file) = history_for {
                 // FR-K9: open the per-file history view for the clicked file.
@@ -361,6 +319,11 @@ impl eframe::App for WalkerApp {
                 // FR-K5: a resolved import applies through the concrete source
                 // (the write path) and refreshes the list/selection.
                 self.apply_import(outcome);
+            }
+            if let Some(fa) = file_action {
+                // FR-K6: a per-file or batch control applies through the
+                // concrete source's transactional mutate path and refreshes.
+                self.handle_file_action(fa);
             }
             if activated.is_some() {
                 // The active file changed: rebind the viewer's renderer through

@@ -92,6 +92,15 @@ mod walrus_import;
 #[path = "walrus_history.rs"]
 mod walrus_history;
 
+// The FR-K6 per-file + batch mutate orchestration (set-generations / condense /
+// remove, each through the transactional `Archive::write`) lives in a child
+// module split out to keep this file under the 400 non-test-line standard
+// (NFR-1). Same `#[path]` child pattern as `walrus_import`: it stays inside the
+// one `walrus_fmt`-aware adapter and may name `walrus_fmt` types + touch
+// `WalrusSource` privates without crossing the FR-K1 AC2 boundary.
+#[path = "walrus_mutate.rs"]
+mod walrus_mutate;
+
 // === HistorySource ======================================================
 
 impl HistorySource for WalrusSource {
@@ -181,6 +190,13 @@ impl WalrusSource {
     /// The splice count (far index = original) for `f`, or `None` if foreign.
     pub(super) fn splice_count_for(&self, f: &FileRef) -> Option<usize> {
         self.splice_count(f.id())
+    }
+
+    /// The archive id string for the tracked file at 0-based manifest position
+    /// `index`, or `None` when `index` is out of range (a stale/foreign id).
+    /// The FR-K6 batch mutate path resolves each selected id this way.
+    pub(super) fn file_id_by_index(&self, index: usize) -> Option<String> {
+        self.file_ids.get(index).map(|id| id.as_str().to_string())
     }
 
     /// The change records for archive id `id`, or `None` when absent.
