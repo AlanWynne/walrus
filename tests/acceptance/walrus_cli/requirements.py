@@ -24,7 +24,7 @@ REGISTRY: dict[str, str] = {
     "FR-W10-AC4": "selectors current/original/index/relative/at; two selectors "
     "RC 2; malformed --at RC 2",
     # --- FR-W11 (walrus CLI ACs) ------------------------------------------
-    "FR-W11-AC1": "query lists files + index size; -l adds attributes + log bytes",
+    "FR-W11-AC1": "query lists files; -l aligned Versions/LastWriteTime/Bytes/Name table",
     "FR-W11-AC2": "two operations -> RC 2",
     "FR-W11-AC3": "update/remove/condense on a non-existent target -> RC 8",
     "FR-W11-AC4": "convert flips per-file direction with --to, round-trips, no "
@@ -38,7 +38,7 @@ REGISTRY: dict[str, str] = {
     "FR-W11-AC7c": "deterministic sorted walk; regular files only",
     "FR-W11-AC7d": "binary file in the walk aborts the batch; archive unchanged",
     "FR-W11-AC7e": "-R update of an untracked recursed file -> RC 8, unchanged",
-    "FR-W11-AC8": "add/update stamp each change with UTC YYYY-MM-DDThh:mm:ssZ",
+    "FR-W11-AC8": "add/update stamp = source-file mtime; wall-clock fallback for stdin",
     "FR-W11-AC9": "add/update read stdin when the operand is '-', with --name",
     "FR-W11-AC9a": "cmd | add - --name foo creates/updates; cat reproduces bytes",
     "FR-W11-AC9b": "'-' without --name -> RC 2; --name without '-' -> RC 2",
@@ -47,8 +47,12 @@ REGISTRY: dict[str, str] = {
     "FR-W11-AC9e": "update - --name on an untracked name -> RC 8",
     "FR-W11-AC9f": "--name stored verbatim; escaping/illegal --name -> RC 2",
     # --- CLI-DESIGN command sections --------------------------------------
-    "CLI-DESIGN-5.1-query-terse": "terse one-name-per-line + index size",
-    "CLI-DESIGN-5.1-query-long": "-l attributes + log-bytes column",
+    "CLI-DESIGN-2.1-shortid-longpath": "deep long-path add -R round-trips, no "
+    "ustar overflow",
+    "CLI-DESIGN-5.1-query-terse": "terse ls-style: one bare name per line, sorted",
+    "CLI-DESIGN-5.1-query-long": "-l aligned table: Versions / LastWriteTime / Bytes / Name",
+    "CLI-DESIGN-5.1-query-lastwrite": "query -l LastWriteTime is the source-file mtime, "
+    "latest version on a multi-version file",
     "CLI-DESIGN-5.1-query-mask": "segment-aware mask filter (* vs **)",
     "CLI-DESIGN-5.2.1-extract-output": "-o recreates nested relative tree",
     "CLI-DESIGN-5.2.1-extract-overwrite": "refuse RC 2 unless --force",

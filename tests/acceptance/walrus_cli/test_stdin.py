@@ -44,7 +44,8 @@ class StdinTests(WalrusCase):
         self.assert_code(self.run_walrus("update", arc, "-", "--name", "p.txt",
                                          stdin=b"v2 longer"), 0)
         r = self.run_walrus("query", arc)
-        self.assertEqual(r.out_text.strip(), "p.txt\t1")
+        self.assertEqual(r.out_text.strip(), "p.txt")
+        self.assertEqual(self.query_versions(arc, "p.txt"), 1)
 
     @covers("FR-W11-AC9e", "FR-W11-AC3", "CLI-DESIGN-6-rc8")
     def test_update_from_stdin_untracked_name_is_rc8(self):
@@ -97,7 +98,7 @@ class StdinTests(WalrusCase):
         self.assert_code(self.run_walrus("add", arc, "-", "--name", "exact/kept.txt",
                                          "--wal", stdin=b"x"), 0)
         r = self.run_walrus("query", arc)
-        self.assertEqual(r.out_text.strip(), "exact/kept.txt\t0")
+        self.assertEqual(r.out_text.strip(), "exact/kept.txt")
 
     @covers("FR-W11-AC9f", "CLI-DESIGN-5.4d-zipslip")
     def test_escaping_name_is_rc2(self):

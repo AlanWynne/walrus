@@ -272,6 +272,23 @@ class WalrusCase(unittest.TestCase):
         self.assert_code(self.run_walrus("update", arc, src, "-R"), 0)
         return edited
 
+    # -- query parsing helpers ---------------------------------------------
+
+    def query_versions(self, arc, name: str) -> int:
+        """The Versions column for *name* under ``query -l``.
+
+        Terse output is now bare ls-style names with no count, so a per-file
+        version count is read from the long table: find the row whose LAST
+        whitespace field equals *name* and parse its FIRST field (Versions).
+        """
+        r = self.run_walrus("query", arc, "-l")
+        self.assert_code(r, 0)
+        for line in r.out_text.splitlines():
+            fields = line.split()
+            if fields and fields[-1] == name:
+                return int(fields[0])
+        raise AssertionError(f"no query -l row for {name!r}\n{r!r}")
+
     # -- codec helpers ------------------------------------------------------
 
     @staticmethod

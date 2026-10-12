@@ -45,7 +45,7 @@ class AddTests(WalrusCase):
         self.assert_code(self.run_walrus("add", arc, f, "--wal"), 0)
         r = self.run_walrus("query", arc)
         self.assert_code(r, 0)
-        self.assertEqual(r.out_text.strip(), "one.txt\t0")
+        self.assertEqual(r.out_text.strip(), "one.txt")
         r2 = self.run_walrus("cat", arc, "one.txt")
         self.assert_code(r2, 0)
         self.assert_stdout_bytes(r2, b"one body")
@@ -57,7 +57,7 @@ class AddTests(WalrusCase):
         arc = self.work / "a.wal"
         self.assert_code(self.run_walrus("add", arc, a, b, "--wal"), 0)
         r = self.run_walrus("query", arc)
-        names = sorted(line.split("\t")[0] for line in r.out_text.splitlines() if line)
+        names = sorted(line for line in r.out_text.splitlines() if line)
         self.assertEqual(names, ["a.txt", "b.txt"])
 
     @covers("FR-W11-AC6")
@@ -68,7 +68,8 @@ class AddTests(WalrusCase):
         self.write(f, "v2 different")
         self.assert_code(self.run_walrus("add", arc, f), 0)
         r = self.run_walrus("query", arc)
-        self.assertEqual(r.out_text.strip(), "f.txt\t1")
+        self.assertEqual(r.out_text.strip(), "f.txt")
+        self.assertEqual(self.query_versions(arc, "f.txt"), 1)
 
     @covers("CLI-DESIGN-5.4-nochange", "CLI-DESIGN-6-rc0")
     def test_second_add_unchanged_is_noop_with_note(self):
@@ -79,7 +80,7 @@ class AddTests(WalrusCase):
         self.assert_code(r, 0)
         self.assert_stderr_contains(r, "no change")
         q = self.run_walrus("query", arc)
-        self.assertEqual(q.out_text.strip(), "f.txt\t0")
+        self.assertEqual(q.out_text.strip(), "f.txt")
 
     @covers("FR-W11-AC7a", "CLI-DESIGN-6-rc2")
     def test_directory_without_recurse_is_rc2(self):
@@ -103,7 +104,7 @@ class AddTests(WalrusCase):
         arc = self.work / "a.wal"
         self.assert_code(self.run_walrus("add", arc, src, "-R", "--wal"), 0)
         r = self.run_walrus("query", arc)
-        names = [line.split("\t")[0] for line in r.out_text.splitlines() if line]
+        names = [line for line in r.out_text.splitlines() if line]
         self.assertEqual(names, sorted(names), "recursion walk must be sorted")
 
     @covers("FR-W11-AC7d", "CLI-DESIGN-5.4a-transactional")
@@ -163,8 +164,7 @@ class AddTests(WalrusCase):
         for body in ("v2 aaa", "v3 bbbb", "v4 ccccc"):
             self.write(f, body)
             self.assert_code(self.run_walrus("add", arc, f, "--generations", "2"), 0)
-        r = self.run_walrus("query", arc)
-        count = int(r.out_text.strip().split("\t")[1])
+        count = self.query_versions(arc, "f.txt")
         self.assertLessEqual(count, 2, "generations cap must bound the index size")
 
     @covers("CLI-DESIGN-5.3-direction", "CLI-DESIGN-6-rc2")

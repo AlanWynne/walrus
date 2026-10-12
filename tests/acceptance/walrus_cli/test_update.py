@@ -19,8 +19,7 @@ class UpdateTests(WalrusCase):
         arc, src, _h = self.seed_archive()
         self.write(src / "readme.txt", "hello walrus\nline two UPDATED")
         self.assert_code(self.run_walrus("update", arc, src, "-R"), 0)
-        r = self.run_walrus("query", arc)
-        self.assert_stdout_contains(r, "src/readme.txt\t1")
+        self.assertEqual(self.query_versions(arc, "src/readme.txt"), 1)
 
     @covers("FR-W11-AC3", "CLI-DESIGN-5.4-update-refuse", "CLI-DESIGN-6-rc8")
     def test_update_untracked_file_is_rc8(self):
@@ -49,8 +48,7 @@ class UpdateTests(WalrusCase):
         r = self.run_walrus("update", arc, src, "-R")        # nothing edited
         self.assert_code(r, 0)
         self.assert_stderr_contains(r, "no change")
-        q = self.run_walrus("query", arc)
-        self.assert_stdout_contains(q, "src/readme.txt\t0")
+        self.assertEqual(self.query_versions(arc, "src/readme.txt"), 0)
 
     @covers("FR-W11-AC8", "CLI-DESIGN-6a-utc-stamp")
     def test_updates_are_stamped_so_at_addressing_resolves(self):
@@ -74,9 +72,7 @@ class UpdateTests(WalrusCase):
             self.write(src / "readme.txt", body)
             self.assert_code(self.run_walrus("update", arc, src, "-R",
                                              "--generations", "2"), 0)
-        r = self.run_walrus("query", arc)
-        row = next(l for l in r.out_text.splitlines() if l.startswith("src/readme.txt\t"))
-        self.assertLessEqual(int(row.split("\t")[1]), 2)
+        self.assertLessEqual(self.query_versions(arc, "src/readme.txt"), 2)
 
 
 if __name__ == "__main__":

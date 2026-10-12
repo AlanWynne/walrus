@@ -25,9 +25,7 @@ class CondenseTests(WalrusCase):
         return arc, src
 
     def _index_size(self, arc, name):
-        r = self.run_walrus("query", arc)
-        row = next(l for l in r.out_text.splitlines() if l.startswith(name + "\t"))
-        return int(row.split("\t")[1])
+        return self.query_versions(arc, name)
 
     @covers("CLI-DESIGN-5.6-condense-keep0")
     def test_keep_zero_collapses_to_current_byte_identical(self):
