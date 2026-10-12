@@ -54,7 +54,7 @@ impl Archive {
 
         // Create path: mint id, seed base = bytes at count 0, only index 0.
         let direction = dir.unwrap_or(self.manifest().variant.direction());
-        let id = self.mint_id(name);
+        let id = self.mint_id();
         let gens = generations.unwrap_or(0);
         let mut tracked = TrackedFile::new_with_direction(&id, name, direction, 0);
         tracked.generations = gens;
@@ -269,17 +269,15 @@ impl Archive {
         self.enforce_generations(id)
     }
 
-    /// Mint a deterministic, archive-unique, filesystem-safe id for `name`
-    /// (M2): slugify, then append the smallest free `-N` (N >= 2) suffix.
-    fn mint_id(&self, name: &str) -> String {
-        let base = slugify(name);
+    /// Mint a SHORT, archive-unique, filesystem-safe id DECOUPLED from the
+    /// file's name (FORMAT.md section 2.1): the smallest free sequential `f<N>`
+    /// in manifest order. Length does not grow with the file's name or path
+    /// depth, so every derived member path stays ustar-legal (<= 100 bytes).
+    fn mint_id(&self) -> String {
         let taken = |candidate: &str| self.manifest().files.iter().any(|f| f.id == candidate);
-        if !taken(&base) {
-            return base;
-        }
-        let mut n = 2usize;
+        let mut n = 0usize;
         loop {
-            let candidate = format!("{base}-{n}");
+            let candidate = format!("f{n}");
             if !taken(&candidate) {
                 return candidate;
             }
@@ -374,29 +372,6 @@ fn net_splice(old: &[u8], new: &[u8]) -> Option<ChangeRecord> {
     Some(ChangeRecord::splice(p, delete_len, insert))
 }
 
-/// Slugify `name` into a filesystem-safe id (M2): lowercase ASCII alnum kept,
-/// every other char becomes `_`, repeats collapsed, leading/trailing `_`
-/// trimmed, empty -> "file".
-fn slugify(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut last_underscore = false;
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            last_underscore = false;
-        } else if !last_underscore {
-            out.push('_');
-            last_underscore = true;
-        }
-    }
-    let trimmed = out.trim_matches('_');
-    if trimmed.is_empty() {
-        "file".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
 // These Archive-level tests live in-crate (not in `tests/`) because the fixture
 // seam `Archive::from_parts_for_test` is `#[cfg(test)] pub(crate)`.
 #[cfg(test)]
@@ -447,16 +422,21 @@ mod tests {
     }
 
     #[test]
-    fn add_mints_deterministic_slug_id() {
+    fn add_mints_sequential_f_ids_decoupled_from_name() {
         let mut a = empty_archive(Variant::Wal);
-        a.add("src/Doc.TXT", b"x", None, None).expect("add");
-        assert!(a.file("src_doc_txt").is_some(), "slug is deterministic");
+        // A deep, long name that the OLD slug scheme would have turned into a
+        // long id now yields a short, name-independent `f0`.
+        let deep = "Walrus-TestData-Base/crates/walker/gui/target/debug/\
+                    build/glutin_wgl_sys/out/wgl_bindings.rs";
+        a.add(deep, b"x", None, None).expect("add");
+        assert_eq!(a.file(deep).expect("tracked").id, "f0", "first add is f0");
 
-        // A second file slugging to the same base gets `-2`.
-        a.add("src\\doc!txt", b"y", None, None).expect("add 2");
-        assert!(
-            a.file("src_doc_txt-2").is_some(),
-            "collision gets -2 suffix"
+        // A second, differently-named add gets `f1`, regardless of its name.
+        a.add("src/other.rs", b"y", None, None).expect("add 2");
+        assert_eq!(
+            a.file("src/other.rs").expect("tracked").id,
+            "f1",
+            "second add is f1"
         );
     }
 
@@ -698,7 +678,7 @@ mod diff_tests {
             .update_with_splices("doc.txt", &diffed.splices)
             .expect("update splices");
 
-        let id = "doc_txt";
+        let id = "f0";
         let b0 = via_bytes
             .reconstruct(&FileId::from(id), Version::Index(0))
             .expect("current");

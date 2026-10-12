@@ -163,12 +163,14 @@ mod tests {
         a
     }
 
-    fn all_indices(archive: &Archive, id: &str) -> Vec<Vec<u8>> {
-        let count = archive.file(id).expect("file").versions.count;
+    fn all_indices(archive: &Archive, sel: &str) -> Vec<Vec<u8>> {
+        let tracked = archive.file(sel).expect("file");
+        let id = tracked.id.clone();
+        let count = tracked.versions.count;
         (0..=count)
             .map(|k| {
                 archive
-                    .reconstruct(&FileId::from(id), Version::Index(k))
+                    .reconstruct(&FileId::from(id.as_str()), Version::Index(k))
                     .expect("reconstruct")
             })
             .collect()
@@ -177,22 +179,22 @@ mod tests {
     #[test]
     fn convert_forward_reverse_forward_reconstructs_every_index_identically() {
         let original = rich_forward_archive();
-        let before = all_indices(&original, "doc_txt");
+        let before = all_indices(&original, "doc.txt");
 
         let reversed = original.convert(None, None).expect("flip to reverse");
         assert_eq!(
-            reversed.file("doc_txt").expect("file").direction,
+            reversed.file("doc.txt").expect("file").direction,
             Direction::Reverse
         );
-        let mid = all_indices(&reversed, "doc_txt");
+        let mid = all_indices(&reversed, "doc.txt");
         assert_eq!(before, mid, "every index identical after forward->reverse");
 
         let back = reversed.convert(None, None).expect("flip back to forward");
         assert_eq!(
-            back.file("doc_txt").expect("file").direction,
+            back.file("doc.txt").expect("file").direction,
             Direction::Forward
         );
-        let after = all_indices(&back, "doc_txt");
+        let after = all_indices(&back, "doc.txt");
         assert_eq!(before, after, "every index identical after the round-trip");
     }
 
@@ -224,12 +226,12 @@ mod tests {
 
         let converted = a.convert(Some("a.txt"), None).expect("masked convert");
         assert_eq!(
-            converted.file("a_txt").expect("a").direction,
+            converted.file("a.txt").expect("a").direction,
             Direction::Reverse,
             "matched file flipped"
         );
         assert_eq!(
-            converted.file("b_txt").expect("b").direction,
+            converted.file("b.txt").expect("b").direction,
             Direction::Forward,
             "unmatched file untouched"
         );
@@ -243,7 +245,7 @@ mod tests {
     #[test]
     fn convert_preserves_count_and_checkpoints() {
         let original = rich_forward_archive();
-        let count_before = original.file("doc_txt").expect("file").versions.count;
+        let count_before = original.file("doc.txt").expect("file").versions.count;
 
         // Attach a checkpoint, then convert.
         let mut with_cp = original;
@@ -252,7 +254,7 @@ mod tests {
                 .manifest_mut()
                 .files
                 .iter_mut()
-                .find(|f| f.id == "doc_txt")
+                .find(|f| f.name == "doc.txt")
                 .expect("file");
             tracked.checkpoints.push(crate::manifest::Checkpoint {
                 index: 1,
@@ -261,7 +263,7 @@ mod tests {
         }
 
         let reversed = with_cp.convert(None, None).expect("flip");
-        let tracked = reversed.file("doc_txt").expect("file");
+        let tracked = reversed.file("doc.txt").expect("file");
         assert_eq!(tracked.versions.count, count_before, "count invariant");
         assert_eq!(tracked.checkpoints.len(), 1, "checkpoints preserved");
         assert_eq!(tracked.checkpoints[0].index, 1, "checkpoint index kept");
@@ -274,12 +276,12 @@ mod tests {
             .convert(None, Some(Direction::Forward))
             .expect("no-op convert");
         assert_eq!(
-            same.file("doc_txt").expect("file").direction,
+            same.file("doc.txt").expect("file").direction,
             Direction::Forward
         );
         assert_eq!(
-            all_indices(&original, "doc_txt"),
-            all_indices(&same, "doc_txt")
+            all_indices(&original, "doc.txt"),
+            all_indices(&same, "doc.txt")
         );
     }
 }

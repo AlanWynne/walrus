@@ -88,19 +88,19 @@ mod tests {
             .expect("add 1");
         a.add("solo.txt", b"solo", None, Some(Direction::Forward))
             .expect("add solo");
-        // Force a second tracked file with the SAME name but a distinct id by
-        // adding again under a name that slugs identically is not possible via
-        // the public add (which updates the existing name); seed directly.
+        // Force a second tracked file with the SAME name but a distinct id:
+        // the public add would UPDATE the existing name, so seed directly with
+        // a hand-chosen id that cannot collide with a minted `f<N>`.
         let (manifest, files) = a.directories_mut();
         let tracked = crate::manifest::TrackedFile::new_with_direction(
-            "dup_txt-2",
+            "dup-extra",
             "dup.txt",
             Direction::Forward,
             0,
         );
         let header = crate::wchg::WchgHeader::new(Direction::Forward, 0, "dup.txt", "utf-8", 0);
         let af = ArchiveFile {
-            id: "dup_txt-2".to_string(),
+            id: "dup-extra".to_string(),
             base: b"two".to_vec(),
             header,
             records: Vec::new(),

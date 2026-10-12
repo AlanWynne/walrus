@@ -180,7 +180,7 @@ mod tests {
 
         // The STORED current is the transcoded UTF-8, not the legacy bytes.
         let stored = a
-            .reconstruct(&FileId::from("doc_txt"), Version::Index(0))
+            .reconstruct(&FileId::from("f0"), Version::Index(0))
             .expect("reconstruct");
         assert_eq!(stored, sample.as_bytes(), "stored as UTF-8");
         // The recorded encoding is the resolved canonical label.
@@ -252,7 +252,7 @@ mod tests {
             "header encoding is immutable across a save"
         );
         assert_eq!(
-            a.reconstruct(&FileId::from("doc_txt"), Version::Index(0))
+            a.reconstruct(&FileId::from("f0"), Version::Index(0))
                 .expect("current"),
             next.as_bytes(),
             "the new current is the UTF-8 save"

@@ -379,19 +379,47 @@ fn read_tracked_file(
     })
 }
 
+/// Max bytes for the advisory `<name>` part of the `files/<id>/<name>.wchg`
+/// member. ustar caps the whole `name` field at 100 bytes; reserve headroom for
+/// `files/` (6), a short-id budget (16), the `/` (1), and the `.wchg` suffix
+/// (5): `100 - 28 = 72`. The real id is `f<N>` (2 bytes typical, <= ~8 bytes for
+/// tens of millions of files), so the id reservation is pure safety margin.
+const WCHG_NAME_MAX_BYTES: usize = 72;
+
 /// A filesystem-safe `<name>` for the `files/<id>/<name>.wchg` member, derived
 /// from the tracked file's authoritative manifest name (FORMAT.md section 2.1:
 /// the member name is a readable rendering for human convenience, present only
 /// so a standalone-extracted log is recognisable). Path separators and
 /// backslashes become `_` so the log stays a single flat member inside the
-/// file's directory; the authoritative name is the manifest's, not this slug.
+/// file's directory; the result is then bounded to [`WCHG_NAME_MAX_BYTES`] so
+/// the whole member path stays ustar-legal (<= 100 bytes) even for a deep path.
+/// The authoritative name is the manifest's, not this slug.
 fn wchg_member_name(name: &str) -> String {
-    name.chars()
+    let slug: String = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' => '_',
             other => other,
         })
-        .collect()
+        .collect();
+    bound_tail_bytes(&slug, WCHG_NAME_MAX_BYTES)
+}
+
+/// Return the last `<= max` bytes of `s` on a UTF-8 char boundary. If `s` is
+/// already within `max` bytes it is returned unchanged; otherwise a candidate
+/// start of `s.len() - max` is walked FORWARD to the next char boundary before
+/// slicing, so the result is always valid UTF-8 and never exceeds `max` bytes.
+/// A trailing slice is chosen because the file's basename and extension -- the
+/// recognisable part of a standalone `.wchg` -- are at the end of the path.
+fn bound_tail_bytes(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    s[start..].to_string()
 }
 
 /// Match the single `*.wchg` member inside a file's `files/<id>/` directory.
@@ -1048,5 +1076,45 @@ mod write_tests {
         let reopened = Archive::open(&path).expect("reopen");
         assert_eq!(reopened.manifest().variant, Variant::Wbl);
         assert_every_index_identical(&second, &reopened);
+    }
+}
+
+// === Change 1: ustar-legal .wchg member name bound =====================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wchg_member_name_bounds_a_deep_path_to_ustar_legal_length() {
+        // A pathological deep name: the OLD rendering embedded the whole path,
+        // overflowing the 100-byte ustar `name` field. The bounded rendering
+        // keeps the WHOLE member path `files/f0/<name>.wchg` <= 100 bytes.
+        let deep = "Walrus-TestData-Base/crates/walker/gui/target/debug/\
+                    build/glutin_wgl_sys/out/wgl_bindings.rs";
+        let rendered = wchg_member_name(deep);
+        let member = format!("files/f0/{rendered}.wchg");
+        assert!(
+            member.len() <= 100,
+            "member path must be ustar-legal (<= 100 bytes), got {}: {member}",
+            member.len()
+        );
+    }
+
+    #[test]
+    fn bound_tail_bytes_keeps_a_utf8_boundary() {
+        // A string of two-byte chars truncated where a char would split must
+        // return valid UTF-8 and <= max bytes (walking FORWARD to a boundary).
+        let s: String = std::iter::repeat('\u{00E9}').take(50).collect(); // 100 bytes
+        let out = bound_tail_bytes(&s, 7);
+        assert!(
+            out.len() <= 7,
+            "result must be <= max bytes, got {}",
+            out.len()
+        );
+        // Valid UTF-8 by construction (it is a &str slice); every char is the
+        // original two-byte char, so an odd `max` lands on a boundary of 6.
+        assert!(out.chars().all(|c| c == '\u{00E9}'), "no split char");
+        // Within-max input is returned unchanged.
+        assert_eq!(bound_tail_bytes("abc", 10), "abc");
     }
 }
