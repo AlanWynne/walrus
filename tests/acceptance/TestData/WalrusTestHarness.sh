@@ -32,7 +32,7 @@ WORK0004="$TEMPDIR/Work0004"
 
 # WALRUS defaults to the debug build; override to test a release binary.
 WALRUS="${WALRUS:-$REPO/target/debug/walrus}"
-REPORT="$TEMPDIR/WalrusTestHarness-Report.md"
+REPORT="$REPO/.gate/tcr/WalrusTestHarness-Report.md"
 COMPARE="$SCRIPT_DIR/compareDir.sh"
 
 PASS=0
@@ -84,6 +84,9 @@ mkdir -p "$TEMPDIR"
 cd "$TEMPDIR"
 
 # Initialise the Markdown report (summary ledger, separate from full stdout).
+# The report now lands in the repo's .gate/tcr/ dir (git-ignored), beside the
+# Python TCR, so both reports sit together; TEMPDIR holds scratch only.
+mkdir -p "$REPO/.gate/tcr"
 {
     echo "# Walrus Test Harness Report"
     echo
@@ -238,6 +241,25 @@ echo "[STEP 18] Error check: query a NON-EXISTENT archive (expect clean non-zero
 "$WALRUS" query "$TEMPDIR/does-not-exist.wal"
 RC18=$?
 reportnz "$RC18" "STEP 18" "Query a missing archive fails cleanly" "non-zero RC, no crash"
+
+# -- 19. Run the Python acceptance suite + TCR (guarded) -------------------
+# If python is available, run the automated Python suite against fresh fixtures
+# and regenerate the Python TCR into the SAME .gate/tcr/ dir as this report. If
+# python is absent, record a MANUAL skipped row and continue -- a missing
+# interpreter must not hard-fail the harness. Redirections live ONLY on the raw
+# python command lines; no metacharacter appears in any report description text.
+echo
+echo "[STEP 19] Python acceptance suite + TCR (skipped if python is absent)"
+PYBIN="$(command -v python3 || command -v python || true)"
+if [ -z "$PYBIN" ]; then
+    manual "STEP 19" "Python acceptance suite" "python not found -- Python suite skipped"
+else
+    export WALRUS_BIN="$WALRUS"
+    "$PYBIN" -m unittest discover -s "$REPO/tests/acceptance/walrus_cli" > "$TEMPDIR/py-suite.log" 2>&1
+    RCPY=$?
+    report "$RCPY" 0 "STEP 19" "Python acceptance suite over fixtures" "rc 0"
+    "$PYBIN" "$REPO/tests/acceptance/walrus_cli/run_tcr.py" > "$TEMPDIR/py-tcr.log" 2>&1 || true
+fi
 
 # -- 90. Report summary ----------------------------------------------------
 echo

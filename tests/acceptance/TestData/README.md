@@ -16,7 +16,7 @@ different lenses on the same binary.
 
 | File | Platform | Role |
 | ---- | -------- | ---- |
-| `WalrusTestHarness.bat` | Windows (cmd) | The 18-step harness. |
+| `WalrusTestHarness.bat` | Windows (cmd) | The 19-step harness. |
 | `WalrusTestHarness.sh`  | Linux / macOS (bash) | Faithful bash port of the same steps. |
 | `compareDir.bat` | Windows (cmd) | Byte-compare two directory trees. |
 | `compareDir.sh`  | Linux / macOS (bash) | Bash port of the comparator. |
@@ -69,9 +69,11 @@ environment and infers `REPO` from its own location.
 - **Console / stdout:** full step-by-step chatter, with a `[STEP N] ...` banner
   before each step and the per-step comparison detail.
 - **Report:** a Markdown PASS/FAIL ledger at
-  `<TEMPDIR>/WalrusTestHarness-Report.md` -- one table row per measurable step
-  (PASS / FAIL / MANUAL), plus a totals section and an overall verdict. This is
-  the easy-to-read summary; the stdout is the detail.
+  `<repo>/.gate/tcr/WalrusTestHarness-Report.md` -- one table row per measurable
+  step (PASS / FAIL / MANUAL), plus a totals section and an overall verdict.
+  It now lands beside the Python TCR in the git-ignored `.gate/tcr/` dir, so
+  both reports sit together; `TEMPDIR` holds scratch only. This is the
+  easy-to-read summary; the stdout is the detail.
 
 A run exits non-zero if any automated check failed. `MANUAL` steps (currently
 the query-listing render check) have no automated pass/fail and must be eyeballed
@@ -94,6 +96,7 @@ in stdout; the report states what to confirm.
 | 16   | A single-file add is stored under its basename, not its full path. |
 | 17   | Adding a directory without `-R` is refused (RC 2). |
 | 18   | Querying a missing archive fails cleanly (non-zero RC, no crash). |
+| 19   | Runs the Python acceptance suite + TCR (skipped if python absent). |
 
 ## Notes / gotchas baked into the scripts
 

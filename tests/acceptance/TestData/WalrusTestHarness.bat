@@ -23,7 +23,7 @@ set "WORK0003=C:\workspace\Walrus-Temp-TestData\Work0003"
 set "WORK0004=C:\workspace\Walrus-Temp-TestData\Work0004"
 
 set "WALRUS=C:\workspace\Walrus\target\debug\walrus.exe"
-set "REPORT=%TEMPDIR%\WalrusTestHarness-Report.md"
+set "REPORT=%REPO%\.gate\tcr\WalrusTestHarness-Report.md"
 
 rem -- 1. Cleanup before start -----------------------------------------------
 rem      Wipe and recreate the temp area so no previous run's extracted tree
@@ -44,6 +44,9 @@ set /a FAIL=0
 rem Markdown report. Table pipes are written as ^| so cmd does not treat them
 rem as a command pipe. The results table header + separator are emitted here;
 rem the :report / :reportnz / :manual subroutines append one table row each.
+rem The report now lands in the repo's .gate\tcr\ dir (git-ignored), beside the
+rem Python TCR, so both reports sit together; TEMPDIR holds scratch only.
+if not exist "%REPO%\.gate\tcr" mkdir "%REPO%\.gate\tcr"
 > "%REPORT%" echo # Walrus Test Harness Report
 >> "%REPORT%" echo.
 >> "%REPORT%" echo - **Generated:** %DATE% %TIME%
@@ -311,6 +314,31 @@ rem Pass criterion is "non-zero" (clean failure). :reportnz checks RC is not 0.
 call :reportnz %RC18% "STEP 18" "Query a missing archive fails cleanly" "non-zero RC, no crash"
 echo " After : %WALRUS% query %TEMPDIR%\does-not-exist.wal"
 echo " Return code: %RC18%   Expectation: non-zero (clean failure, no crash)"
+
+rem -- 19. Run the Python acceptance suite + TCR (guarded) -------------------
+rem      If python is on PATH, run the automated Python suite against freshly
+rem      built fixtures and regenerate the Python TCR into the SAME .gate\tcr\
+rem      dir as this report. If python is absent, record a MANUAL skipped row
+rem      and continue -- a missing interpreter must not hard-fail the harness.
+rem      Redirections live ONLY on the raw python command lines; NO cmd
+rem      metacharacter appears in any :report / :manual description text.
+
+echo.
+echo [STEP 19] Python acceptance suite + TCR (skipped if python is absent)
+where python >nul 2>&1
+if errorlevel 1 goto :step19_skip
+
+set "WALRUS_BIN=%WALRUS%"
+python -m unittest discover -s "%REPO%\tests\acceptance\walrus_cli" > "%TEMPDIR%\py-suite.log" 2>&1
+set "RCPY=%ERRORLEVEL%"
+call :report %RCPY% 0 "STEP 19" "Python acceptance suite over fixtures" "rc 0"
+python "%REPO%\tests\acceptance\walrus_cli\run_tcr.py" > "%TEMPDIR%\py-tcr.log" 2>&1
+goto :step19_done
+
+:step19_skip
+call :manual "STEP 19" "Python acceptance suite" "python not found -- Python suite skipped"
+
+:step19_done
 
 rem -- 90. Report summary ----------------------------------------------------
 echo.
