@@ -15,25 +15,17 @@ use std::time::Duration;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
-use walrus_fmt::{ChangeRecord, WalrusFile};
-
 use walker::player::Player;
 use walker::transport;
 
 /// Build a deterministic in-memory player with a known number of versions.
 ///
-/// Uses `WalrusFile::new_wal` so the test touches no disk and no fixture file
+/// The player is position-only (it owns an index/len, not a backend document),
+/// so a timeline of three change steps is `Player::new(3)`: `len() == 3`, so the
+/// index can advance 0 -> 1 and seek across `0..=3`. No disk and no fixture file
 /// (testing steering: deterministic, no external files outside tests/fixtures).
-/// Three splice records give `len() == 3`, so the index can advance 0 -> 1.
 fn player_with_three_versions() -> Player {
-    let base = b"walrus".to_vec();
-    let log = vec![
-        ChangeRecord::splice(0, 0, "a"),
-        ChangeRecord::splice(0, 0, "b"),
-        ChangeRecord::splice(0, 0, "c"),
-    ];
-    let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid in-memory file");
-    Player::new(file)
+    Player::new(3)
 }
 
 /// FR-K3 AC1: a "step older" action INCREASES the model index (index 0 is the

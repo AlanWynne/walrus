@@ -36,6 +36,9 @@ pub struct StatusInfo<'a> {
     pub renderer: &'a str,
     /// The document MIME type.
     pub mime: &'a str,
+    /// An optional presentation note (e.g. a structured-view caveat), shown
+    /// after the mime when `Some`. `None` leaves the bar visually unchanged.
+    pub note: Option<&'a str>,
 }
 
 /// Context the menu bar needs to render the per-document export menu.
@@ -107,6 +110,10 @@ pub fn top_bar(
 }
 
 /// Draw the bottom status bar (non-interactive labels), plus any current error.
+///
+/// When `info.note` is `Some`, the note is rendered after the mime (a separator
+/// then the label); when `None` the bar is visually identical to the Phase-1
+/// layout.
 pub fn status_bar(ui: &mut egui::Ui, info: Option<&StatusInfo<'_>>, message: &str) {
     ui.horizontal(|ui| match info {
         Some(info) => {
@@ -119,6 +126,10 @@ pub fn status_bar(ui: &mut egui::Ui, info: Option<&StatusInfo<'_>>, message: &st
             ui.label(info.renderer);
             ui.separator();
             ui.label(info.mime);
+            if let Some(note) = info.note {
+                ui.separator();
+                ui.label(note);
+            }
             ui.separator();
             ui.label(message);
         }
@@ -126,4 +137,55 @@ pub fn status_bar(ui: &mut egui::Ui, info: Option<&StatusInfo<'_>>, message: &st
             ui.label(message);
         }
     });
+}
+
+// === Tests ==========================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+    use egui_kittest::Harness;
+
+    /// Build a `StatusInfo` with the given optional note, over fixed fields.
+    fn info_with_note(note: Option<&'static str>) -> StatusInfo<'static> {
+        StatusInfo {
+            file_name: "doc.json",
+            variant: "amrg",
+            index: 0,
+            total: 3,
+            renderer: "Code",
+            mime: "application/json",
+            note,
+        }
+    }
+
+    #[test]
+    fn status_bar_renders_the_note_label_when_some() {
+        let mut harness = Harness::new_ui(|ui| {
+            let info = info_with_note(Some("Automerge (structured JSON view)"));
+            status_bar(ui, Some(&info), "ready");
+        });
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("Automerge (structured JSON view)")
+                .is_some(),
+            "a Some(note) must reach the status bar as a label"
+        );
+    }
+
+    #[test]
+    fn status_bar_omits_the_note_label_when_none() {
+        let mut harness = Harness::new_ui(|ui| {
+            let info = info_with_note(None);
+            status_bar(ui, Some(&info), "ready");
+        });
+        harness.run();
+        assert!(
+            harness
+                .query_by_label("Automerge (structured JSON view)")
+                .is_none(),
+            "a None note must not render any extra label"
+        );
+    }
 }

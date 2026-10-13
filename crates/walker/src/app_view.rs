@@ -22,17 +22,6 @@ pub(super) fn navigator_renderer(
     }
 }
 
-/// The document name and MIME for display and renderer selection.
-///
-/// Document metadata is per-file now; the single-document model keeps it on the
-/// first tracked file. Falls back to sensible defaults for an empty manifest.
-pub(super) fn document_name_and_mime(manifest: &walrus_fmt::Manifest) -> (String, String) {
-    match manifest.files.first() {
-        Some(file) => (file.name.clone(), file.mime.clone()),
-        None => (String::new(), "application/octet-stream".to_string()),
-    }
-}
-
 /// A short label for a renderer, for the status bar.
 pub(super) fn renderer_label(renderer: &Renderer) -> &'static str {
     match renderer {

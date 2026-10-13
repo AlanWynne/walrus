@@ -262,6 +262,33 @@ fn condense_files_batch_shrinks_every_selected_files_index_size() {
 }
 
 #[test]
+fn export_via_version_at_zero_matches_a_bare_index_zero_for_walrus() {
+    // The FR-K6 export now reconstructs the current version through
+    // `source.version_at(file, 0)` rather than a bare `VersionId::Index(0)`.
+    // For a walrus source `version_at` returns `Index(0)` (the trait default),
+    // so the two MUST produce byte-identical current-version output -- this
+    // guards the export's behaviour-identity after the player-indirection
+    // change (FEAT-002, design item 9).
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let records = [ChangeRecord::splice(2, 0, "!")];
+    let path = single_file_archive(dir.path(), "doc.wal", "f0", "a.txt", b"hi", &records);
+    let source = WalrusSource::open(&path).expect("open");
+    let file = source.files().into_iter().next().expect("a.txt");
+
+    let via_version_at = source
+        .reconstruct(&file, &source.version_at(&file, 0))
+        .expect("reconstruct via version_at(0)");
+    let via_index_zero = source
+        .reconstruct(&file, &VersionId::Index(0))
+        .expect("reconstruct via Index(0)");
+    assert_eq!(
+        via_version_at, via_index_zero,
+        "walrus version_at(0) and Index(0) reconstruct identically"
+    );
+    assert_eq!(via_version_at, b"hi!", "the current version is base + splice");
+}
+
+#[test]
 fn a_mutate_that_errors_leaves_the_archive_byte_for_byte_unchanged() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = single_file_archive(dir.path(), "doc.wal", "f0", "a.txt", b"hi", &[]);
