@@ -14,6 +14,7 @@
 pub mod cat;
 pub mod error;
 pub mod extract;
+pub mod input_glob;
 pub mod mask;
 pub mod names;
 pub mod safety;

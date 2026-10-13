@@ -77,6 +77,16 @@ REGISTRY: dict[str, str] = {
     "CLI-DESIGN-5.4d-refuse": "default refuses unrepresentable name RC 2",
     "CLI-DESIGN-5.4d-zipslip": "path-escape refused RC 2 even with sanitize/force",
     "CLI-DESIGN-5.4e-stdin": "'-' + --name stdin ingestion rules",
+    "CLI-DESIGN-5.4f-add-glob": "add expands a wildcard file operand itself "
+    "(portable glob), identical on Windows and POSIX",
+    "CLI-DESIGN-5.4f-update-glob": "update expands a wildcard file operand "
+    "itself, exactly as add",
+    "CLI-DESIGN-5.4f-literal-wins": "an existing literal path (incl. a "
+    "shell-pre-expanded name) is used as-is, never re-globbed",
+    "CLI-DESIGN-5.4f-nomatch-rc2": "a wildcard matching no file is RC 2 with a "
+    "clear diagnostic",
+    "CLI-DESIGN-5.4f-no-recurse": "a plain * does not cross / (no implicit "
+    "recursion); ** recurses",
     "CLI-DESIGN-5.5-remove-single": "single match removes without force",
     "CLI-DESIGN-5.5-remove-multi": "multi-match needs --force (RC 2 else)",
     "CLI-DESIGN-5.5-remove-nomatch": "no match -> RC 8",

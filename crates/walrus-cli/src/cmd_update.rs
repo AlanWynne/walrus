@@ -6,13 +6,14 @@
 //! save-instant UTC timestamp (AC8). Transactional: the archive is persisted
 //! once at the end, so a mid-batch RC-8 leaves it byte-for-byte unchanged.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
 use walrus_fmt::Archive;
 
 use wal_cli_common::error::CliError;
+use wal_cli_common::input_glob;
 
 use crate::clock;
 use crate::common::{split_option, take_value};
@@ -86,13 +87,19 @@ fn collect_sources(args: &UpdateArgs) -> Result<Vec<Source>> {
         }]);
     }
 
+    // Expand wildcard file-input operands BEFORE any byte is read, exactly as
+    // for `add` (CLI-DESIGN 5.4f). A resolved path absent from the archive is a
+    // NotTracked -> RC 8 downstream, distinct from a filesystem no-match (RC 2).
+    let resolved = input_glob::resolve_file_operands(&args.files)
+        .map_err(|e| CliError::usage(e.to_string()))?;
+
     let mut out = Vec::new();
-    for arg in &args.files {
-        let path = Path::new(arg);
+    for path in &resolved {
         if path.is_dir() {
             if !args.recurse {
                 return Err(CliError::usage(format!(
-                    "'{arg}' is a directory; pass -R to update its contents"
+                    "'{}' is a directory; pass -R to update its contents",
+                    path.display()
                 ))
                 .into());
             }
@@ -107,7 +114,7 @@ fn collect_sources(args: &UpdateArgs) -> Result<Vec<Source>> {
             let bytes =
                 std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             out.push(Source {
-                name: stored_name(arg),
+                name: stored_name(&path.to_string_lossy()),
                 bytes,
                 ts: clock::file_mtime_utc(path),
             });

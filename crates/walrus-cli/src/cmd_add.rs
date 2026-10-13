@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use walrus_fmt::{Archive, Direction, Manifest, Variant};
 
 use wal_cli_common::error::CliError;
+use wal_cli_common::input_glob;
 
 use crate::clock;
 use crate::common::{split_option, take_value};
@@ -101,13 +102,20 @@ fn collect_sources(args: &AddArgs) -> Result<Vec<Source>> {
         }]);
     }
 
+    // Expand any wildcard file-input operand to concrete paths BEFORE any byte
+    // is read (CLI-DESIGN 5.4f). literal-path-wins, else portable glob (a
+    // no-match is RC 2), else unchanged passthrough. `-R` still governs how a
+    // resolved directory is handled below, unchanged.
+    let resolved = input_glob::resolve_file_operands(&args.files)
+        .map_err(|e| CliError::usage(e.to_string()))?;
+
     let mut out = Vec::new();
-    for arg in &args.files {
-        let path = Path::new(arg);
+    for path in &resolved {
         if path.is_dir() {
             if !args.recurse {
                 return Err(CliError::usage(format!(
-                    "'{arg}' is a directory; pass -R to add its contents"
+                    "'{}' is a directory; pass -R to add its contents",
+                    path.display()
                 ))
                 .into());
             }
@@ -122,7 +130,7 @@ fn collect_sources(args: &AddArgs) -> Result<Vec<Source>> {
             let bytes =
                 std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             out.push(Source {
-                name: stored_name(arg),
+                name: stored_name(&path.to_string_lossy()),
                 bytes,
                 ts: clock::file_mtime_utc(path),
             });
