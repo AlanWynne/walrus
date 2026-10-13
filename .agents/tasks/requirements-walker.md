@@ -91,6 +91,15 @@ trait HistorySource {
   FR-K7 bloat ratio `R = log_bytes / size_bytes` compute from the trait alone.
   It holds NO `walrus_fmt` types, so AC2 still holds. This was purely additive --
   no existing method signature, `FileRef`, `VersionId`, or `VersionMeta` changed.
+- NOTE (added by FR-K9): `history`/`HistoryEntry` were added to this contract
+  deliberately. `history(&self, f: &FileRef) -> Vec<HistoryEntry>` returns the
+  file's change-log records in version-index order (0 = current, higher = older)
+  for the FR-K9 history viewer and its Markdown report; each `HistoryEntry`
+  carries the index it produced, an optional timestamp and note, and a
+  `SpliceSummary { at, deleted_len, inserted_len }`. Both `HistoryEntry` and
+  `SpliceSummary` are plain walker-side values holding NO `walrus_fmt` types, so
+  AC2 still holds. This was purely additive -- no existing method signature,
+  `FileRef`, `VersionId`, `VersionMeta`, or `FileInfo` changed.
 
 ### FR-K2 WalrusSource adapter -- BLOCKED on walrus-fmt section 1
 Implement `HistorySource` over the new `Archive` API: `files()` from
