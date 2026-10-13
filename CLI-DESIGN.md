@@ -576,6 +576,9 @@ walrus <archive> <files-to-add...> -a                                          #
   found beneath it, storing each under its path RELATIVE to the recursion root
   as the archive name (section 5.4b). Without `-R`, a directory argument is a
   usage error (RC 2).
+- A file-input operand that contains wildcard metacharacters is expanded by
+  walrus itself before any file is read (section 5.4f). This is what makes
+  `walrus add base.wal *.md` behave identically on Windows and POSIX.
 
 #### Direction flag `--wal` / `--wbl` / `--direction` -- DECIDED
 
@@ -642,6 +645,9 @@ walrus <archive> <files-to-update...> -u                                        
 
 Difference from Add: Add creates a missing file; Update refuses and fails. The
 diff/update behavior is otherwise identical.
+
+- A file-input operand that contains wildcard metacharacters is expanded by
+  walrus itself before any file is read (section 5.4f), exactly as for `add`.
 
 #### No-change save (diff finds nothing) -- DECIDED
 
@@ -715,10 +721,11 @@ extends them to descend into directory arguments and ingest the files beneath.
   (section 5.2.1) already recreates stored relative paths on disk, so a recursed
   add followed by an extract reproduces the directory layout.
 
-- MASK INTERACTION: a wildcard argument (section 5, `<file-mask>`) still expands
-  via the shell / mask matcher to the set of paths it matches. `-R` governs only
-  how a DIRECTORY among those paths is treated (descend vs. RC 2). A mask that
-  matches only files behaves identically with or without `-R`.
+- MASK INTERACTION: a wildcard file-input operand expands to a set of paths
+  FIRST -- by the shell on POSIX, else by walrus's own portable glob (section
+  5.4f) -- and `-R` then governs only how a DIRECTORY among those resolved paths
+  is treated (descend vs. RC 2). A pattern that matches only files behaves
+  identically with or without `-R`.
 
 - SYMLINKS AND SPECIAL FILES: the walk follows regular files only. Symbolic links
   are NOT followed (avoids cycles and escaping the recursion root); directory
@@ -782,9 +789,20 @@ reads or matches a stored name (`query`, `extract`, `cat`, `remove`), not just
   - `?` matches a single non-`/` character;
   - a mask with no wildcard is an exact whole-name match.
   Matching is performed on the normalized `/` form, so the SAME mask selects the
-  SAME files regardless of the platform the command runs on. (A shell may also
-  expand an unquoted wildcard before the CLI sees it; that is the shell's doing
-  and is independent of this internal matcher, which operates on stored names.)
+  SAME files regardless of the platform the command runs on.
+
+  SCOPE OF THIS MATCHER vs. ADD/UPDATE INPUT GLOBBING. This internal matcher
+  operates on STORED names and governs `query` / `extract` / `remove` ONLY. It
+  is a SEPARATE mechanism from the filesystem glob that `add` / `update` apply
+  to their FILE-INPUT operands (section 5.4f): the former selects already-tracked
+  names inside the archive, the latter expands a pattern against the working
+  directory to find files to ingest. A shell may also pre-expand an unquoted
+  wildcard before walrus sees it; on POSIX it usually does, and walrus then
+  receives literal paths. The add/update input globber (5.4f) is deliberately
+  LITERAL-PATH-WINS so a shell-expanded pattern is never re-globbed, and so the
+  natural Windows invocation (where the shell does NOT expand) still works. The
+  two mechanisms share the same `*` / `**` / `?` segment semantics but never run
+  on the same input.
 
 ### 5.4d Extract naming safety: reserved names, path escaping, sanitize, rename -- DECIDED
 
@@ -897,6 +915,107 @@ shell exposes the source through process substitution or `/dev/fd` (so a name
 could be inferred) -- platform-specific and deferred; 0.1 always requires
 `--name` with `-`.
 
+### 5.4f Wildcard expansion of add/update FILE INPUTS -- DECIDED
+
+PROBLEM (verified, cross-platform). On POSIX the shell expands an unquoted
+`*.md` into a list of matching paths BEFORE walrus runs, so `walrus add base.wal
+*.md` works. On Windows, cmd.exe and PowerShell do NOT expand `*.md`; walrus
+receives the LITERAL operand `*.md`, tries to open a file named `*.md`, and
+fails (on Windows, os error 123, "The filename, directory name, or volume label
+syntax is incorrect"). The single most natural Windows invocation therefore
+broke under the earlier design, which treated wildcard expansion of file INPUTS
+as the shell's job and left the internal matcher (section 5.4c) for stored names
+only.
+
+DECISION: walrus itself expands a file-input operand that contains wildcard
+metacharacters, using a PORTABLE glob (the `glob` crate), so `add *.md` and
+`update *.md` behave IDENTICALLY on Windows and POSIX. On POSIX the shell may
+still pre-expand first; walrus then sees literal paths and MUST NOT re-glob them
+(the literal-path-wins rule below guarantees that).
+
+SCOPE. This rule applies ONLY to the FILE-INPUT operands (the sources) of `add`
+and `update` -- the files to ingest. It does NOT apply to:
+- the `<archive>` path (always a literal path);
+- a `-` stdin operand (section 5.4e);
+- the `--name <stored-name>` value (a verbatim stored name, section 5.4e).
+The stored-name mask matcher for `query` / `extract` / `remove` (section 5.4c)
+is UNCHANGED by this rule; it is a different mechanism operating on stored names,
+not filesystem paths.
+
+PER-OPERAND RESOLUTION. Each file-input operand is resolved independently, in
+this exact order:
+
+1. LITERAL-PATH-WINS. If the operand matches an EXISTING literal path on disk
+   (a file OR a directory), use it AS-IS -- no globbing. This is the POSIX /
+   pre-expanded case (the shell already produced literal paths), and it also
+   lets a real file whose name legitimately contains a glob metacharacter win
+   over glob interpretation. Checking the literal path FIRST is what makes the
+   feature a no-op on an already-expanded command line.
+2. GLOB. ELSE if the operand contains a glob metacharacter (`*`, `?`, or `[`),
+   expand it with the portable glob relative to the CURRENT WORKING DIRECTORY,
+   collect the matches, and SORT them into a DETERMINISTIC order (lexicographic
+   over the matched paths), then treat that sorted set as the operands in place
+   of the pattern. If the pattern matches NOTHING, that is an ERROR: print a
+   clear diagnostic to stderr (e.g. `walrus: no files match pattern '<p>'`) and
+   exit RC 2. See "No-match return code" below for why RC 2.
+3. LITERAL, NON-EXISTENT, NO METACHARACTERS. ELSE (the operand has no glob
+   metacharacter and names no existing path) behaviour is UNCHANGED from today:
+   the existing "file not found" read error (a general non-zero failure, as the
+   current `std::fs::read` path produces).
+
+NO-MATCH RETURN CODE: RC 2 (usage error). CHOSEN after inspecting the section 6
+return-code table and `dispatch.rs`. RC 8 is reserved for "target file does not
+exist IN THE ARCHIVE" (a stored-name miss on `update` / `remove` / `condense` /
+`convert`); a glob that matches nothing on the FILESYSTEM at add/update time is
+not an archive-membership miss -- it is an unsatisfiable operand supplied on the
+command line, which is squarely a usage error. RC 2 is also what the adjacent
+operand-validation case already uses (a directory operand without `-R`, sections
+5.3 / 5.4b), so a malformed/unsatisfiable file operand and a no-match pattern
+report the SAME class of error. This keeps the spec's own RC logic consistent.
+
+INTERACTION WITH `-R`. Globbing happens FIRST (operand -> a set of resolved
+paths); THEN each resolved path is handled by the existing add/update logic,
+including the `-R` directory rule (section 5.4b). `-R` governs how a DIRECTORY
+among the resolved paths is treated (descend vs. RC 2), UNCHANGED. A `*.md`
+pattern that matches only FILES therefore behaves identically with or without
+`-R`. The glob itself does NOT recurse implicitly: a plain `*` stays within one
+directory level and does NOT cross `/` (so `*.md` matches `README.md` but not
+`docs/guide.md`); only `**` crosses segments and recurses. This matches the
+segment-aware `*` / `**` / `?` semantics the stored-name matcher already defines
+(section 5.4c), so the two mechanisms read consistently even though they run on
+different inputs.
+
+PATH SEPARATORS AND DRIVE QUALIFICATION. On Windows the pattern accepts BOTH `/`
+and `\` as separators. A bare pattern (`*.md`) expands relative to the current
+working directory; a drive-qualified or absolute pattern
+(`c:\workspace\Walrus\*.md`, or `/home/user/*.md`) expands against that location.
+Both forms must work. Quote and escape handling MUST NOT mangle a Windows
+drive-qualified pattern -- the `c:\...` prefix is a path, not an escape sequence.
+
+BINARY / TRANSACTIONAL. The existing rules apply to the EXPANDED set exactly as
+to a literal multi-file add. A binary file among the matches is rejected
+(section 2.2.2) and, under the batch transaction (section 5.4a), aborts the
+WHOLE add/update: no partial archive is written, the original is left
+byte-for-byte unchanged. A no-change save among the matches is the success no-op
+of section 5.4 (skipped with a stderr note, does not fail the batch).
+
+DETERMINISM. Expansion sorts its matches (step 2) so a given working-directory
+state always produces the SAME batch order and therefore the SAME resulting
+archive, satisfying the deterministic-output rule in the testing convention --
+the same guarantee `-R` recursion already provides (section 5.4b).
+
+LIBRARY/FORMAT IMPACT: NONE. This is CLI argument handling (operand expansion
+before any byte is read), not a change to the on-disk format or to any
+`walrus-fmt` primitive -- the expanded paths funnel through the same
+`Archive::add` / `Archive::update` calls a literal multi-file add already uses.
+FORMAT.md is UNAFFECTED (INV-1): no record, manifest, or codec field changes.
+
+OPEN (ergonomics, not blocking 0.1): a flag to opt OUT of walrus-side expansion
+(for a user who wants a literal `*` operand on a system where the shell did not
+expand and no file matches) -- not needed now, since literal-path-wins already
+covers a real file named with a metacharacter, and a no-match pattern is a clear
+RC 2 rather than a silent mis-open.
+
 ### 5.5 Remove (new)
 
 ```
@@ -978,7 +1097,7 @@ walrus convert <archive> [file-mask] --to <wal|wbl> [-o <name>]
 | Code | Meaning |
 |------|---------|
 | 0    | Success (includes a no-change add/update no-op, section 5.4) |
-| 2    | Usage error (unknown option, mutually exclusive operations, bad args) |
+| 2    | Usage error (unknown option, mutually exclusive operations, bad args, an add/update file-input pattern matching no files per section 5.4f) |
 | 4    | Extract index beyond the last recorded change; original returned with a warning |
 | 8    | Target file does not exist in the archive (update / remove / condense / convert) |
 
