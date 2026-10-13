@@ -22,7 +22,14 @@ class ConvertTests(WalrusCase):
         return arc, initial, edited
 
     def _extract_hashes(self, arc, selector_args):
-        out = self.work / ("x" + str(id(selector_args)))
+        # Each extract needs its OWN fresh output dir: extracting into a
+        # populated dir is refused (RC 2, "target already exists"). A per-call
+        # monotonic counter guarantees uniqueness; the previous id(selector_args)
+        # scheme was unsafe because CPython reuses the id (memory address) of a
+        # garbage-collected transient list, so two calls could collide on the
+        # same dir and the second extract would fail intermittently.
+        self._extract_seq = getattr(self, "_extract_seq", 0) + 1
+        out = self.work / f"x{self._extract_seq}"
         self.assert_code(
             self.run_walrus("extract", arc, "-o", out, *selector_args), 0
         )
