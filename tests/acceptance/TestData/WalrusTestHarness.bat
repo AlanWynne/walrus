@@ -66,9 +66,13 @@ echo [STEP 2] Building source tree: robocopy *.md/*.rs from %REPO% to %BASE%
 robocopy "%REPO%" "%BASE%" *.md *.rs /S /XD target .worktrees .git .gate node_modules TestData
 
 rem -- 3. Create a brand new .wal archive from BASE --------------------------
-rem      NOTE: Windows cmd does NOT expand a trailing "\*" like a Unix shell; it
-rem      passes the literal "*" to walrus and Windows rejects it (os error 123).
-rem      Point walrus at the directory and let -R recurse the tree instead.
+rem      Point walrus at the BASE directory with -R to capture the WHOLE
+rem      recursive tree (BASE has nested subdirs). A bare "%BASE%\*.md" would
+rem      only match top-level .md files, so -R on the directory is what this
+rem      whole-tree round-trip needs. (walrus now self-expands a wildcard file
+rem      operand like *.md itself -- CLI-DESIGN 5.4f -- so that form works on
+rem      Windows too; STEP 20 exercises it directly. It is just not what THIS
+rem      whole-tree step wants.)
 
 echo.
 echo [STEP 3] Creating archive: walrus add %WORK0000%.wal %BASE% --wal -R
@@ -339,6 +343,33 @@ goto :step19_done
 call :manual "STEP 19" "Python acceptance suite" "python not found -- Python suite skipped"
 
 :step19_done
+
+rem -- 20. Wildcard self-expansion: add *.md (CLI-DESIGN 5.4f) ---------------
+rem      walrus now expands a wildcard file operand itself, so `add base.wal
+rem      *.md` works on Windows cmd (which does NOT pre-expand the glob) exactly
+rem      as it does on a POSIX shell. Build a small flat dir of three .md files,
+rem      add with the LITERAL pattern, and confirm all three were stored.
+
+echo.
+echo [STEP 20] Wildcard self-expand: add *.md stores every matching file
+set "GLOBDIR=%TEMPDIR%\globsrc"
+mkdir "%GLOBDIR%"
+echo one> "%GLOBDIR%\a.md"
+echo two> "%GLOBDIR%\b.md"
+echo three> "%GLOBDIR%\c.md"
+echo notmd> "%GLOBDIR%\d.txt"
+cd /d "%GLOBDIR%"
+"%WALRUS%" add "%TEMPDIR%\glob.wal" *.md --wal
+set "RC20=%ERRORLEVEL%"
+cd /d "%TEMPDIR%"
+rem Expect exactly the three .md files stored (d.txt excluded by the pattern).
+"%WALRUS%" query "%TEMPDIR%\glob.wal" > "%TEMPDIR%\glob-query.log" 2>&1
+rem Count stored names via find /c /v "" on the query output.
+for /f %%N in ('type "%TEMPDIR%\glob-query.log" ^| find /c /v ""') do set "GLOBCOUNT=%%N"
+echo " After : %WALRUS% add glob.wal *.md --wal   (literal pattern, cmd does not pre-expand)"
+echo " add rc=%RC20%   stored names=%GLOBCOUNT%   Expectation: rc 0, 3 names"
+call :report %RC20% 0 "STEP 20a" "add with literal *.md pattern succeeds" "rc 0"
+call :report %GLOBCOUNT% 3 "STEP 20b" "wildcard *.md expands to exactly the 3 md files" "3 stored names"
 
 rem -- 90. Report summary ----------------------------------------------------
 echo.

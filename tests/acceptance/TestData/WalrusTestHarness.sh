@@ -261,6 +261,29 @@ else
     "$PYBIN" "$REPO/tests/acceptance/walrus_cli/run_tcr.py" > "$TEMPDIR/py-tcr.log" 2>&1 || true
 fi
 
+# -- 20. Wildcard self-expansion: add *.md (CLI-DESIGN 5.4f) ---------------
+# walrus expands a wildcard file operand itself, so `add glob.wal *.md` works
+# even when the shell did NOT pre-expand it. Here we QUOTE the pattern so bash
+# does not expand it, passing the literal "*.md" to walrus -- a faithful test
+# of walrus's own expansion (and the Windows-cmd case). Build a small flat dir
+# of three .md files plus a .txt, add with the literal pattern, confirm exactly
+# the three .md files were stored.
+echo
+echo "[STEP 20] Wildcard self-expand: add *.md stores every matching file"
+GLOBDIR="$TEMPDIR/globsrc"
+mkdir -p "$GLOBDIR"
+printf 'one\n'   > "$GLOBDIR/a.md"
+printf 'two\n'   > "$GLOBDIR/b.md"
+printf 'three\n' > "$GLOBDIR/c.md"
+printf 'notmd\n' > "$GLOBDIR/d.txt"
+( cd "$GLOBDIR" && "$WALRUS" add "$TEMPDIR/glob.wal" '*.md' --wal )
+RC20=$?
+GLOBCOUNT=$("$WALRUS" query "$TEMPDIR/glob.wal" | grep -c .)
+echo " After : $WALRUS add glob.wal '*.md' --wal   (literal pattern, shell did not pre-expand)"
+echo " add rc=$RC20   stored names=$GLOBCOUNT   Expectation: rc 0, 3 names"
+report "$RC20" 0 "STEP 20a" "add with literal *.md pattern succeeds" "rc 0"
+report "$GLOBCOUNT" 3 "STEP 20b" "wildcard *.md expands to exactly the 3 md files" "3 stored names"
+
 # -- 90. Report summary ----------------------------------------------------
 echo
 echo "============================================================"
