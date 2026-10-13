@@ -59,6 +59,10 @@ REGISTRY: dict[str, str] = {
     "CLI-DESIGN-5.2.2-cat-stdout": "exact bytes to stdout, no disk write",
     "CLI-DESIGN-5.3-add-create": "create under .wal and .wbl",
     "CLI-DESIGN-5.3-add-basename": "single-file arg stored under basename",
+    "CLI-DESIGN-5.3-add-scale": "many-file mixed-depth tree add -R round-trips "
+    "byte-identical at scale",
+    "CLI-DESIGN-5.3-add-noop-deterministic": "a no-op re-add of unchanged "
+    "content leaves the archive byte-identical",
     "CLI-DESIGN-5.3-direction": "--wal/--wbl/--direction seed + conflict RC 2",
     "CLI-DESIGN-5.3-generations": "--generations caps + trims",
     "CLI-DESIGN-5.4-update-refuse": "update of an untracked file -> RC 8",
