@@ -18,6 +18,18 @@ use anyhow::Result;
 mod walrus;
 pub use walrus::WalrusSource;
 
+// The Automerge adapter (FR-K11 FEAT-003). It is the ONE module allowed to name
+// `automerge` types; it enters the build ONLY behind the `automerge` feature so
+// the lean Phase-1 build is the default and `walrus-fmt`/`walx` never see it
+// (INV-2). The Rust module is name-aliased `automerge_src` via `#[path]` so it
+// does not collide with the `automerge` CRATE name, while the file stays
+// `source/automerge.rs`.
+#[cfg(feature = "automerge")]
+#[path = "automerge.rs"]
+mod automerge_src;
+#[cfg(feature = "automerge")]
+pub use automerge_src::AutomergeSource;
+
 /// A plain walker-side Automerge change-hash: the 32-byte hash rendered as a
 /// lowercase hex string.
 ///

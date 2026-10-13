@@ -338,10 +338,7 @@ impl eframe::App for WalkerApp {
             let mut file_action = None;
             let picker = RfdPicker;
             egui::Panel::left("navigator").show(ui, |ui| {
-                let source = self
-                    .read_source
-                    .as_deref()
-                    .expect("read source is Some");
+                let source = self.read_source.as_deref().expect("read source is Some");
                 let action =
                     navigator::panels(ui, source, &picker, &mut self.import, &mut self.navigator);
                 activated = action.activated;
@@ -402,8 +399,11 @@ impl eframe::App for WalkerApp {
             .zip(active.as_ref())
             .and_then(|(source, file)| source.status_note(file));
         egui::Panel::bottom("status").show(ui, |ui| {
-            let info = self.player.as_ref().zip(hint.as_ref()).map(
-                |(player, (mime, name))| StatusInfo {
+            let info = self
+                .player
+                .as_ref()
+                .zip(hint.as_ref())
+                .map(|(player, (mime, name))| StatusInfo {
                     file_name: name,
                     variant,
                     index: player.index(),
@@ -411,8 +411,7 @@ impl eframe::App for WalkerApp {
                     renderer: renderer_label,
                     mime,
                     note: note.as_deref(),
-                },
-            );
+                });
             chrome::status_bar(ui, info.as_ref(), &status);
         });
 
@@ -435,12 +434,9 @@ impl eframe::App for WalkerApp {
                 // `version_at(active, index)`: `Index(index)` for walrus/
                 // in-memory sources (behaviour-identical to Phase 1), the `Heads`
                 // for that linear point for an Automerge source.
-                let version = active
-                    .as_ref()
-                    .zip(self.source())
-                    .map(|(file, source)| {
-                        source.version_at(file, self.player.as_ref().map_or(0, Player::index))
-                    });
+                let version = active.as_ref().zip(self.source()).map(|(file, source)| {
+                    source.version_at(file, self.player.as_ref().map_or(0, Player::index))
+                });
                 egui::ScrollArea::both().show(ui, |ui| {
                     match (self.source(), active.as_ref(), version.as_ref()) {
                         // Drive the viewer through the seam for the selected

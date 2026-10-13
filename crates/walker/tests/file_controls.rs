@@ -285,7 +285,10 @@ fn export_via_version_at_zero_matches_a_bare_index_zero_for_walrus() {
         via_version_at, via_index_zero,
         "walrus version_at(0) and Index(0) reconstruct identically"
     );
-    assert_eq!(via_version_at, b"hi!", "the current version is base + splice");
+    assert_eq!(
+        via_version_at, b"hi!",
+        "the current version is base + splice"
+    );
 }
 
 #[test]
