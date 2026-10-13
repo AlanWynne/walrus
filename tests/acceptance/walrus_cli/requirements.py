@@ -102,6 +102,8 @@ REGISTRY: dict[str, str] = {
     "CLI-DESIGN-1.4-codec-gzip-defer": "gzip-magic file errors cleanly (deferral)",
     "CLI-DESIGN-1.4-codec-garbage": "random-magic file errors cleanly, no panic",
     "CLI-DESIGN-6a-utc-stamp": "--at works on a CLI-produced archive (AC8 proof)",
+    "CLI-DESIGN-5-deep-history": "deep single-file history (~50 mixed-size "
+    "versions) restores byte-exact at every index via --index/--version/--at",
 }
 
 
