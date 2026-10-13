@@ -125,17 +125,31 @@ impl HistorySource for WalrusSource {
         let file_id = self
             .file_id(f)
             .ok_or_else(|| anyhow::anyhow!("no tracked file for id {}", f.id()))?;
-        let VersionId::Index(index) = v;
+        let index = match v {
+            VersionId::Index(index) => *index,
+            // A walrus archive addresses versions by index, never by Automerge
+            // heads; defensive arm only (WalrusSource never produces `Heads`).
+            VersionId::Heads(_) => {
+                return Err(anyhow::anyhow!(
+                    "WalrusSource addresses versions by index, not heads"
+                ));
+            }
+        };
         // Index semantics are identical across the two layers (0 = current,
         // count = original), so the index passes straight through.
         self.archive
-            .reconstruct(file_id, Version::Index(*index))
+            .reconstruct(file_id, Version::Index(index))
             .with_context(|| format!("reconstructing {} at version index {}", f.name(), index))
     }
 
     fn metadata(&self, f: &FileRef, v: &VersionId) -> VersionMeta {
-        let VersionId::Index(index) = v;
-        metadata_for(&self.archive, f.id(), *index)
+        let index = match v {
+            VersionId::Index(index) => *index,
+            // WalrusSource never produces `Heads`; return the same index-less
+            // default the stale-ref path returns.
+            VersionId::Heads(_) => return empty_meta(0),
+        };
+        metadata_for(&self.archive, f.id(), index)
     }
 
     fn content_hint(&self, f: &FileRef) -> (String, String) {

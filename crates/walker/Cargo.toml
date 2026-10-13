@@ -43,6 +43,16 @@ pulldown-cmark = "0.11"
 csv = "1.3"
 serde_json = { workspace = true }
 
+# Automerge adapter backend (FR-K11). Optional and OFF by default: it enters the
+# build ONLY behind the `automerge` feature, so the lean Phase-1 build is the
+# default and `walrus-fmt`/`walx` never see it (INV-2). Pinned EXACTLY to 0.12.0.
+automerge = { version = "0.12.0", optional = true }
+
+[features]
+# Turns on the feature-gated AutomergeSource adapter and pulls in the automerge
+# crate (`dep:automerge`). NO `default` entry: the feature is OFF by default.
+automerge = ["dep:automerge"]
+
 [dev-dependencies]
 # Headless GUI test harness. Default (egui) harness drives a Ui closure; the
 # eframe feature is not needed for the transport-control harness tests.
