@@ -230,8 +230,8 @@ mod tests {
         touch(tmp.path(), "a.md", "a");
         touch(tmp.path(), "keep.txt", "k");
         let _cwd = CwdGuard::enter(tmp.path());
-        let got = resolve_file_operands(&["*.md".to_string(), "keep.txt".to_string()])
-            .expect("resolve");
+        let got =
+            resolve_file_operands(&["*.md".to_string(), "keep.txt".to_string()]).expect("resolve");
         assert_eq!(got, vec![PathBuf::from("a.md"), PathBuf::from("keep.txt")]);
     }
 }

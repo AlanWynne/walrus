@@ -84,7 +84,10 @@ fn reconstruct_at_every_index_of_a_deep_history_matches_expected_bytes() {
         let got = file
             .reconstruct(Version::Index(index))
             .expect("reconstruct must succeed for an in-range index");
-        assert_eq!(&got, want, "version {index} reconstructs to the wrong bytes");
+        assert_eq!(
+            &got, want,
+            "version {index} reconstructs to the wrong bytes"
+        );
     }
 }
 

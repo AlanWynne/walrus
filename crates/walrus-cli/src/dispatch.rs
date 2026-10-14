@@ -97,7 +97,10 @@ fn wants_top_level_help(argv: &[String]) -> bool {
 /// extracting. Help has no such clash; version does, hence the first-token-only
 /// rule.
 fn wants_top_level_version(argv: &[String]) -> bool {
-    matches!(argv.first().map(String::as_str), Some("-V") | Some("--version"))
+    matches!(
+        argv.first().map(String::as_str),
+        Some("-V") | Some("--version")
+    )
 }
 
 /// Print the binary name and crate version to stdout (e.g. `walrus 0.1.0`).
@@ -232,15 +235,27 @@ mod tests {
         // follows a subcommand -- otherwise `extract <arc> --version original`
         // would print the version instead of extracting (the bug this fixes).
         assert!(!wants_top_level_version(&argv(&[
-            "extract", "a.wal", "--version", "original"
+            "extract",
+            "a.wal",
+            "--version",
+            "original"
         ])));
         assert!(!wants_top_level_version(&argv(&[
-            "cat", "a.wal", "f.txt", "--version", "original"
+            "cat",
+            "a.wal",
+            "f.txt",
+            "--version",
+            "original"
         ])));
         // And two selectors must still reach the subcommand (to be RC 2 there),
         // not be short-circuited here.
         assert!(!wants_top_level_version(&argv(&[
-            "extract", "a.wal", "--index", "0", "--version", "original"
+            "extract",
+            "a.wal",
+            "--index",
+            "0",
+            "--version",
+            "original"
         ])));
     }
 
