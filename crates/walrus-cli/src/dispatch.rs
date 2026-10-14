@@ -83,22 +83,21 @@ fn wants_top_level_help(argv: &[String]) -> bool {
     false
 }
 
-/// True when `-V`/`--version` appears as a top-level token before any `--`.
+/// True when the FIRST argument is `-V` or `--version` (the version request).
 ///
 /// `-V` (uppercase) is the version short flag by GNU convention; `-v` is left
-/// free for a future `--verbose`. A `--` ends top-level option scanning, so a
-/// stored filename literally named `--version` after `--` is never mistaken
-/// for the flag.
+/// free for a future `--verbose`.
+///
+/// CRUCIAL: `--version` is ALSO the extract/cat version SELECTOR
+/// (`--version <current|original|+/-n>`), so it must only be treated as the
+/// top-level version flag when it is the FIRST token -- i.e. `walrus --version`
+/// with no operation. Scanning the whole argv (as `--help` safely can, since
+/// `help`/`--help` is never a selector) would wrongly hijack
+/// `walrus extract <arc> --version original`, printing the version instead of
+/// extracting. Help has no such clash; version does, hence the first-token-only
+/// rule.
 fn wants_top_level_version(argv: &[String]) -> bool {
-    for token in argv {
-        if token == "--" {
-            break;
-        }
-        if token == "-V" || token == "--version" {
-            return true;
-        }
-    }
-    false
+    matches!(argv.first().map(String::as_str), Some("-V") | Some("--version"))
 }
 
 /// Print the binary name and crate version to stdout (e.g. `walrus 0.1.0`).
@@ -215,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_version_long_and_short_are_detected() {
+    fn version_as_first_token_long_and_short_is_detected() {
         assert!(wants_top_level_version(&argv(&["--version"])));
         assert!(wants_top_level_version(&argv(&["-V"])));
     }
@@ -227,9 +226,22 @@ mod tests {
     }
 
     #[test]
-    fn version_flag_after_double_dash_is_not_treated_as_the_flag() {
-        // After `--`, tokens are positionals (e.g. a stored name), not options.
-        assert!(!wants_top_level_version(&argv(&["add", "a.wal", "--", "--version"])));
+    fn version_as_a_selector_after_a_subcommand_is_not_the_version_flag() {
+        // REGRESSION GUARD: `--version` is also the extract/cat version SELECTOR.
+        // It must only be the top-level flag as the FIRST token, never when it
+        // follows a subcommand -- otherwise `extract <arc> --version original`
+        // would print the version instead of extracting (the bug this fixes).
+        assert!(!wants_top_level_version(&argv(&[
+            "extract", "a.wal", "--version", "original"
+        ])));
+        assert!(!wants_top_level_version(&argv(&[
+            "cat", "a.wal", "f.txt", "--version", "original"
+        ])));
+        // And two selectors must still reach the subcommand (to be RC 2 there),
+        // not be short-circuited here.
+        assert!(!wants_top_level_version(&argv(&[
+            "extract", "a.wal", "--index", "0", "--version", "original"
+        ])));
     }
 
     #[test]
@@ -240,8 +252,8 @@ mod tests {
 
     #[test]
     fn help_takes_precedence_over_version_when_both_present() {
-        // Both set -> help path; still RC 0, but the ordering is asserted so a
-        // future refactor cannot silently flip precedence.
+        // --help first -> help path; still RC 0, ordering asserted so a future
+        // refactor cannot silently flip precedence.
         assert!(wants_top_level_help(&argv(&["--help", "--version"])));
         assert_eq!(run_with(&argv(&["--help", "--version"])).unwrap(), 0);
     }

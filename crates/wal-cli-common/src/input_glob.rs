@@ -76,12 +76,11 @@ pub fn resolve_file_operand(operand: &str) -> Result<Vec<PathBuf>, InputGlobErro
             detail: e.to_string(),
         })?;
         let mut matches: Vec<PathBuf> = Vec::new();
-        for entry in paths {
-            // A read error on a single candidate is skipped; a truly broken
-            // pattern already surfaced above as a PatternError.
-            if let Ok(path) = entry {
-                matches.push(path);
-            }
+        // A read error on a single candidate is skipped (flatten drops Err
+        // entries); a truly broken pattern already surfaced above as a
+        // PatternError from glob::glob.
+        for path in paths.flatten() {
+            matches.push(path);
         }
         if matches.is_empty() {
             return Err(InputGlobError::NoMatch {
