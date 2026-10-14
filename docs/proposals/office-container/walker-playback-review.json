@@ -1,0 +1,24 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "LOW",
+      "location": "walker-playback.md section 4 (final paragraph) and FR-WP1 AC3",
+      "problem": "Describes the HistorySource binding as a FileRef that has versions()/reconstruct(version) methods. The real FR-K1 trait places versions(&self, &FileRef) and reconstruct(&self, &FileRef, &VersionId) on HistorySource, not on FileRef, and uses walker-side VersionId rather than walrus_fmt::Version.",
+      "fix": "Reword to the trait's real shape: the group is exposed through HistorySource; source.versions(&group_ref) and source.reconstruct(&group_ref, VersionId::Index(k)) return the document versions and office bytes (WalrusSource maps VersionId to walrus_fmt::Version and calls extract_office)."
+    },
+    {
+      "severity": "LOW",
+      "location": "walker-playback.md section 4 (bullet 2 vs final paragraph)",
+      "problem": "States the office view calls archive.extract_office directly, while also routing the group through the HistorySource seam. Both end at extract_office so there is no behavioural conflict, but two reconstruction paths are described; a direct archive.extract_office call from the view would reintroduce the walrus_fmt dependency FR-K1/FR-K8 isolate.",
+      "fix": "Make the seam the single normative path: the view obtains bytes via HistorySource::reconstruct(&group_ref, VersionId::Index(player.index())); WalrusSource is the only place that calls archive.extract_office."
+    },
+    {
+      "severity": "LOW",
+      "location": "walker-playback.md section 4 (bullet 2)",
+      "problem": "Contrasts against player.current_bytes() reconstructing 'a single tracked file'. Accurate for today's single-file player.rs, but in the multi-file HistorySource world (FR-K2/FR-K8) reconstruction already goes through the seam, so the contrast point is slightly out of date.",
+      "fix": "Contrast against the seam's reconstruct rather than the legacy Player::current_bytes, consistent with finding 2."
+    }
+  ],
+  "reviewDoc": "c:\\workspace\\Walrus\\.agents\\tasks\\office-container\\walker-playback-review.md"
+}

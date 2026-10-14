@@ -108,15 +108,31 @@ scoped `-p <crate>` checks with the full gate as the owner's manual step.
 
 ## Walrus-core follow-ups still open (small)
 
-- Test-base `.wal` fixture: snapshot the real git history of the top-level `.md`
-  files into a committed fixture, replay into a multi-file archive stamped with
-  real commit dates, and assert `extract --at <date>` returns the exact
-  historical state. (The synthetic deep-history test had to skip mid-history
-  `--at` because it could not pin per-version timestamps; this fixes that gap.)
+- `--at` timestamp addressing: COVERED by `tests/acceptance/walrus_cli/
+  test_at_timeline.py` (multi-file archive with known per-version mtimes set via
+  `os.utime`, asserts `extract --at <T>` resolves each file to the newest change
+  record at-or-before T; before-first-record -> current). The deep-history test's
+  mid-history `--at` skip is thus closed by a sibling test. OPTIONAL still: a
+  fixture built from the top-level `.md` files' REAL git history (authentic
+  content/dates) -- only if authentic data is specifically wanted; the synthetic
+  timeline already proves the behaviour deterministically.
 - `walrus --version` flag (the acceptance TCR records the CLI has none; binary
   identity currently falls back to the git short-sha).
 - Pre-existing clippy `manual_str_repeat` lint at `crates/walrus/src/archive.rs`
   (surfaces under `cargo clippy --all-targets`).
+
+## Future features -- DESIGNED, not yet started
+
+- OFFICE-CONTAINER (ODF / OOXML): store an office document in a `.wal` by
+  UNPACKING it into its inner zip parts, tracking each part as its own file
+  grouped as one logical document, and REPACKING byte-identically on extract.
+  Approved, design-reviewed planning lives at `docs/proposals/office-container/`
+  (requirements, design, a spec-first FORMAT.md change proposal, ADRs, and a
+  phase-two Walker view-only playback plan blocked on phase one). PLANNING ONLY
+  -- no code yet. When development starts: create a FRESH worktree off the
+  latest `main` (per the "Branch hygiene" rule in
+  `.kiro/steering/project-conventions.md`) and begin with the spec-first
+  FORMAT.md change in `format-change-proposal.md`.
 
 ## HISTORICAL -- the OLD single-file format work that was re-worked (now superseded)
 

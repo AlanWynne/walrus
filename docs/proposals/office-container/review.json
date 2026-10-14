@@ -1,0 +1,24 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "NIT",
+      "location": "design.md section 0 / section 8 / section 10",
+      "problem": "The chosen ZIP crate (zip = \"2\", default-features = false, features = [\"deflate\"]) selects a DEFLATE backend whose byte-exact re-DEFLATE reproducibility depends on the specific backend and version linked; the docs discuss reproducibility only in general 'toolchain' terms.",
+      "fix": "At implementation time, record in design.md section 8 which DEFLATE backend the pinned zip minor pulls in, so the ingest-time re-DEFLATE verification experiment is run against a named backend. Design is not blocked: ingest-verify-or-stored_compressed-or-fail already covers the risk."
+    },
+    {
+      "severity": "NIT",
+      "location": "crates/walrus/src/record.rs module doc (pre-existing; tracked in design.md section 12)",
+      "problem": "record.rs module doc says 'log.jsonl' while FORMAT.md and these documents use '.wchg'. Pre-existing .rs discrepancy, already recorded as BACKLOGGED and correctly deferred because this task may not edit .rs.",
+      "fix": "No document change needed. When the implementer next touches record.rs, update the module doc from 'log.jsonl' to '.wchg'."
+    },
+    {
+      "severity": "NIT",
+      "location": "design.md section 4 and format-change-proposal.md section 8.2 (dos_time field in the envelope JSON sketch)",
+      "problem": "dos_time is shown as an ISO-8601 string, but a ZIP header stores a packed MS-DOS date/time (2-second resolution, 1980 epoch). As a representation this is fine, but the docs do not explicitly state that the recorded value is the exact MS-DOS field round-tripped losslessly rather than a re-derived wall-clock time.",
+      "fix": "Add a one-line note that dos_time encodes the raw MS-DOS date/time field (round-tripped to/from the packed bits), not a converted timestamp, so repack reproduces the original packed bytes. Covered in spirit by 'written verbatim'; the note removes ambiguity."
+    }
+  ],
+  "reviewDoc": "c:\\workspace\\Walrus\\.agents\\tasks\\office-container\\review.md"
+}
