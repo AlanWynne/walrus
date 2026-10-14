@@ -554,6 +554,12 @@ mod tests {
     /// are junk: a feature-OFF open never decodes it (it is rejected at the
     /// sniff), and the feature-ON arm is proven by the headless harness with a
     /// REAL document, so junk is enough to exercise the sniff routing here.
+    ///
+    /// Gated to feature-OFF: its only caller is the
+    /// `#[cfg(not(feature = "automerge"))]` not-built-in test below, so without
+    /// this gate the helper is dead code (and a `-D warnings` failure) in the
+    /// feature-ON build.
+    #[cfg(not(feature = "automerge"))]
     fn automerge_magic_file() -> (tempfile::TempDir, std::path::PathBuf) {
         temp_file_with(&[0x85, 0x6F, 0x4A, 0x83, 0x00, 0x01, 0x02], "doc.amrg")
     }
