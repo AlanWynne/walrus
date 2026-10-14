@@ -14,7 +14,7 @@
 //! drive); every step before the dialog is pure and tested.
 
 use crate::navigator::controls::FileAction;
-use crate::source::{FileRef, HistorySource, VersionId, WalrusSource};
+use crate::source::{FileRef, HistorySource, WalrusSource};
 
 use super::{navigator_renderer, WalkerApp};
 
@@ -26,15 +26,18 @@ impl WalkerApp {
     /// The byte-mutation + transactional write go through the `walrus_fmt`
     /// mutate API (`Archive::add`, FR-W7), merged on this branch.
     pub(super) fn apply_import(&mut self, outcome: crate::import::ImportOutcome) {
-        if self.source.is_none() {
+        if self.write_source.is_none() {
             return;
         }
         let target = outcome.resolution.target_name().to_string();
-        let source = self.source.as_mut().expect("source is Some");
+        let source = self.write_source.as_mut().expect("write source is Some");
         let result = source.import(&outcome.resolution, &outcome.bytes, &outcome.path);
         match result {
             Ok(()) => {
                 self.status = format!("Imported {target}");
+                // The write changed the archive on disk: rebuild the boxed read
+                // source so the navigator/viewer reflect it through the seam.
+                self.sync_read_source();
                 self.refresh_after_import(&target);
             }
             Err(e) => {
@@ -47,13 +50,14 @@ impl WalkerApp {
     /// reflect it after a successful mutate (AC1 list refresh). Falls back to
     /// the first tracked file when the named file is gone (e.g. after a remove).
     pub(super) fn refresh_after_import(&mut self, name: &str) {
-        if let Some(source) = self.source.as_ref() {
-            let files = source.files();
-            if let Some(file) = files.iter().find(|f| f.name() == name) {
-                self.navigator.select(file);
-            } else if let Some(first) = files.first() {
-                self.navigator.select(first);
-            }
+        // Collect the current file list from the read source first (an owned
+        // snapshot), then re-select, so the immutable read borrow does not
+        // overlap the mutable navigator borrow.
+        let files = self.source().map(|s| s.files()).unwrap_or_default();
+        if let Some(file) = files.iter().find(|f| f.name() == name) {
+            self.navigator.select(file);
+        } else if let Some(first) = files.first() {
+            self.navigator.select(first);
         }
         if let Some(source) = self.source() {
             self.renderer = navigator_renderer(source, &self.navigator);
@@ -70,7 +74,7 @@ impl WalkerApp {
         let Some(path) = self.path.clone() else {
             return;
         };
-        let Some(source) = self.source.as_mut() else {
+        let Some(source) = self.write_source.as_mut() else {
             return;
         };
         let result = match &action {
@@ -107,6 +111,9 @@ impl WalkerApp {
         match result {
             Ok(message) => {
                 self.status = message;
+                // The write changed the archive on disk: rebuild the boxed read
+                // source so the navigator/viewer reflect it through the seam.
+                self.sync_read_source();
                 self.refresh_after_mutate();
             }
             Err(e) => {
@@ -129,15 +136,31 @@ impl WalkerApp {
         }
     }
 
-    /// Re-open the source from `path` (unchanged bytes) after a failed mutate.
+    /// Re-open BOTH the concrete write handle and the boxed read source from
+    /// `path` (unchanged bytes) after a failed mutate, so memory and disk stay
+    /// in lockstep.
     fn reopen_source(&mut self, path: &std::path::Path) {
         match WalrusSource::open(path) {
-            Ok(source) => self.source = Some(source),
+            Ok(source) => self.write_source = Some(source),
             Err(e) => {
                 self.status = format!("{} (and re-open failed: {e})", self.status);
-                self.source = None;
+                self.write_source = None;
             }
         }
+        self.sync_read_source();
+    }
+
+    /// Rebuild the boxed read source from the open archive path so every read
+    /// path (navigator, viewer, status bar, export) reflects a just-written
+    /// archive through the seam. A no-op when no path is open; clears the read
+    /// source on a re-open failure (the navigator then shows nothing).
+    fn sync_read_source(&mut self) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        self.read_source = WalrusSource::open(&path)
+            .ok()
+            .map(|s| Box::new(s) as Box<dyn HistorySource>);
     }
 
     /// Reconstruct the current version of the export target(s) and run the save
@@ -158,7 +181,12 @@ impl WalkerApp {
             let Some(file) = files.iter().find(|f| f.id() == id) else {
                 continue;
             };
-            let bytes = match source.reconstruct(file, &VersionId::Index(0)) {
+            // Route through `version_at(file, 0)` so the "current version" is
+            // the one expression everywhere: `Index(0)` for a walrus source
+            // (behaviour-identical to Phase 1), the current `Heads` for an
+            // Automerge source. The reconstruct is otherwise unchanged.
+            let version = source.version_at(file, 0);
+            let bytes = match source.reconstruct(file, &version) {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     self.status = format!("Export of {} failed: {e}", file.name());

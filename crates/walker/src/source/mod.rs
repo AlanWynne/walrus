@@ -18,19 +18,97 @@ use anyhow::Result;
 mod walrus;
 pub use walrus::WalrusSource;
 
+// The Automerge adapter (FR-K11 FEAT-003). It is the ONE module allowed to name
+// `automerge` types; it enters the build ONLY behind the `automerge` feature so
+// the lean Phase-1 build is the default and `walrus-fmt`/`walx` never see it
+// (INV-2). The Rust module is name-aliased `automerge_src` via `#[path]` so it
+// does not collide with the `automerge` CRATE name, while the file stays
+// `source/automerge.rs`.
+#[cfg(feature = "automerge")]
+#[path = "automerge.rs"]
+mod automerge_src;
+#[cfg(feature = "automerge")]
+pub use automerge_src::AutomergeSource;
+
+// === magic-byte sniff ===================================================
+
+// The sniff helper and its magic-byte constants live here (NOT in the
+// feature-gated automerge adapter) because the open path must classify a file
+// in BOTH feature states: a feature-OFF build still needs to RECOGNISE an
+// Automerge file so it can report that support is not built in, rather than
+// mis-opening it as a walrus container. None of these items name an `automerge`
+// type, so they are dependency-free (INV-2) and compile with the feature off.
+
+/// The leading bytes that identify an Automerge document container.
+pub const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6F, 0x4A, 0x83];
+/// The leading bytes of a zstd frame (a Walrus container codec).
+pub const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+/// The leading bytes of a gzip member (a Walrus container codec).
+pub const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
+
+/// Which backend a file's leading bytes identify.
+///
+/// The file extension is a hint only; the magic bytes decide (FR-K11.1,
+/// FORMAT.md section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// An Automerge document (leading [`AUTOMERGE_MAGIC`]).
+    Automerge,
+    /// A Walrus `.wal`/`.wbl` container (zstd/gzip, or anything else so the
+    /// walrus reader can surface a precise error).
+    Walrus,
+}
+
+/// Classify a file by its leading bytes.
+///
+/// Returns [`Backend::Automerge`] only for the exact [`AUTOMERGE_MAGIC`] prefix;
+/// zstd/gzip prefixes, unrecognised bytes, and inputs shorter than four bytes
+/// all fall through to [`Backend::Walrus`] (which errors cleanly if the file is
+/// not actually a Walrus container).
+pub fn sniff_backend(head: &[u8]) -> Backend {
+    if head.starts_with(&AUTOMERGE_MAGIC) {
+        Backend::Automerge
+    } else {
+        Backend::Walrus
+    }
+}
+
+/// A plain walker-side Automerge change-hash: the 32-byte hash rendered as a
+/// lowercase hex string.
+///
+/// It carries NO `automerge` type, so `source/mod.rs` and every GUI consumer
+/// stay free of the `automerge` dependency (INV-2) and compile with the feature
+/// off. The automerge adapter is the only code that converts between this and
+/// `automerge::ChangeHash`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HeadId(String);
+
+impl HeadId {
+    /// Build a `HeadId` from its lowercase-hex rendering.
+    pub fn new(hex: impl Into<String>) -> Self {
+        Self(hex.into())
+    }
+
+    /// The lowercase-hex rendering of the change hash.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Identifies a specific version of a tracked file.
 ///
 /// Index semantics (locked format decision): index 0 is the CURRENT version
 /// and a HIGHER index is an OLDER version. Index 0 is NOT the original base.
 /// Stepping "back in time" INCREASES the index.
-///
-/// The enum carries a single variant today. A `Heads(..)` variant is added in
-/// Phase 2 for the Automerge DAG; the enum is deliberately open so that
-/// addition is churn-free (callers already match on `VersionId`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionId {
     /// A linear version index where 0 is CURRENT and higher is OLDER.
     Index(usize),
+    /// A set of Automerge heads identifying a point in the change DAG.
+    ///
+    /// Produced ONLY by `AutomergeSource`; walrus/in-memory sources never
+    /// produce it. The vec is the frontier (usually one head, more at a merge).
+    Heads(Vec<HeadId>),
 }
 
 /// Metadata describing a single version of a file.
@@ -149,6 +227,27 @@ pub trait HistorySource {
     /// Returns an error if `f` is not a tracked file, `v` is out of range, or
     /// the backend fails to reconstruct the requested version.
     fn reconstruct(&self, f: &FileRef, v: &VersionId) -> Result<Vec<u8>>;
+
+    /// The version addressing value for the linear position `index` (0 =
+    /// current, higher = older) of file `f`.
+    ///
+    /// Walrus/in-memory sources return `VersionId::Index(index)`;
+    /// `AutomergeSource` returns the `VersionId::Heads` for that linear point.
+    /// The default returns `Index(index)` so existing sources need no change.
+    /// `versions(f)` is used only to compute the far index at open; the
+    /// per-frame version ALWAYS comes from this method.
+    fn version_at(&self, _f: &FileRef, index: usize) -> VersionId {
+        VersionId::Index(index)
+    }
+
+    /// A short structured-view note for the status bar, or `None` when the
+    /// source has nothing extra to label.
+    ///
+    /// `AutomergeSource` overrides this to flag a structured (JSON) view;
+    /// walrus/in-memory sources inherit the `None` default.
+    fn status_note(&self, _f: &FileRef) -> Option<String> {
+        None
+    }
 
     /// Metadata (label/timestamp/author) for file `f` at version `v`.
     fn metadata(&self, f: &FileRef, v: &VersionId) -> VersionMeta;
@@ -291,10 +390,16 @@ pub mod testsupport {
             let entry = self
                 .lookup(f)
                 .ok_or_else(|| anyhow::anyhow!("no such file: {}", f.name()))?;
-            let VersionId::Index(index) = v;
+            let index = match v {
+                VersionId::Index(index) => *index,
+                // An in-memory source never emits `Heads`; defensive arm only.
+                VersionId::Heads(_) => {
+                    return Err(anyhow::anyhow!("InMemorySource has no Automerge heads"));
+                }
+            };
             entry
                 .versions
-                .get(*index)
+                .get(index)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("version index {} out of range", index))
         }
@@ -450,23 +555,34 @@ mod tests {
             let file = self
                 .lookup(f)
                 .ok_or_else(|| anyhow::anyhow!("no such file: {}", f.name()))?;
-            let VersionId::Index(index) = v;
+            let index = match v {
+                VersionId::Index(index) => *index,
+                // The fake source never emits `Heads`; defensive arm only.
+                VersionId::Heads(_) => {
+                    return Err(anyhow::anyhow!("FakeSource has no Automerge heads"));
+                }
+            };
             file.versions
-                .get(*index)
+                .get(index)
                 .map(|version| version.bytes.clone())
                 .ok_or_else(|| anyhow::anyhow!("version index {} out of range", index))
         }
 
         fn metadata(&self, f: &FileRef, v: &VersionId) -> VersionMeta {
-            let VersionId::Index(index) = v;
+            let empty = || VersionMeta {
+                label: String::new(),
+                timestamp: None,
+                author: None,
+            };
+            let index = match v {
+                VersionId::Index(index) => *index,
+                // The fake source never emits `Heads`; defensive arm only.
+                VersionId::Heads(_) => return empty(),
+            };
             self.lookup(f)
-                .and_then(|file| file.versions.get(*index))
+                .and_then(|file| file.versions.get(index))
                 .map(|version| version.meta.clone())
-                .unwrap_or_else(|| VersionMeta {
-                    label: String::new(),
-                    timestamp: None,
-                    author: None,
-                })
+                .unwrap_or_else(empty)
         }
 
         fn content_hint(&self, f: &FileRef) -> (String, String) {
@@ -521,6 +637,57 @@ mod tests {
                 })
                 .collect()
         }
+    }
+
+    // === magic-byte sniff (FR-K11) ======================================
+
+    #[test]
+    fn sniff_backend_classifies_the_automerge_magic_as_automerge() {
+        let head = [0x85, 0x6F, 0x4A, 0x83, 0x00, 0x11];
+        assert_eq!(sniff_backend(&head), Backend::Automerge);
+    }
+
+    #[test]
+    fn sniff_backend_classifies_zstd_and_gzip_prefixes_as_walrus() {
+        assert_eq!(sniff_backend(&[0x28, 0xB5, 0x2F, 0xFD]), Backend::Walrus);
+        assert_eq!(sniff_backend(&[0x1F, 0x8B, 0x08, 0x00]), Backend::Walrus);
+    }
+
+    #[test]
+    fn sniff_backend_classifies_junk_and_short_input_as_walrus() {
+        assert_eq!(sniff_backend(&[0xDE, 0xAD, 0xBE, 0xEF]), Backend::Walrus);
+        assert_eq!(sniff_backend(&[0x85, 0x6F]), Backend::Walrus);
+        assert_eq!(sniff_backend(&[]), Backend::Walrus);
+    }
+
+    // === VersionId::Heads + HeadId (FR-K11 FEAT-001) ====================
+
+    #[test]
+    fn head_id_round_trips_its_hex_via_new_and_as_str() {
+        let head = HeadId::new("ab12cd");
+        assert_eq!(head.as_str(), "ab12cd");
+    }
+
+    #[test]
+    fn version_heads_is_not_equal_to_version_index() {
+        let heads = VersionId::Heads(vec![HeadId::new("ab12cd")]);
+        assert_ne!(heads, VersionId::Index(0));
+    }
+
+    #[test]
+    fn version_at_defaults_to_the_matching_index() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let readme = source.file_named("README.md");
+        assert_eq!(source.version_at(&readme, 1), VersionId::Index(1));
+    }
+
+    #[test]
+    fn status_note_defaults_to_none() {
+        use super::testsupport::InMemorySource;
+        let source = InMemorySource::sample();
+        let readme = source.file_named("README.md");
+        assert_eq!(source.status_note(&readme), None);
     }
 
     #[test]

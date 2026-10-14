@@ -8,8 +8,6 @@
 
 use std::time::Duration;
 
-use walrus_fmt::{Version, WalrusFile};
-
 /// Direction the auto-player advances along the version timeline.
 ///
 /// Index 0 is the CURRENT version and a HIGHER index is an OLDER version
@@ -25,13 +23,16 @@ pub enum Direction {
     Newer,
 }
 
-/// Playback state over an opened Walrus file.
+/// Playback state over a version timeline, addressed by position only.
 ///
-/// The player owns the current version index and the auto-advance settings.
-/// A GUI drives it by calling [`Player::tick`] with elapsed time each frame and
-/// rendering [`Player::current_bytes`].
+/// The player owns the current version index (0 = current, higher = older), the
+/// far-end index `len`, and the auto-advance settings. It does NOT own any
+/// backend document: byte reconstruction flows through the active
+/// [`HistorySource`](crate::source::HistorySource) in the app shell, so a single
+/// state machine drives every backend. A GUI drives it by calling
+/// [`Player::tick`] with elapsed time each frame and refreshing the displayed
+/// bytes from the source when a step reports a change.
 pub struct Player {
-    file: WalrusFile,
     index: usize,
     len: usize,
     playing: bool,
@@ -44,11 +45,11 @@ pub struct Player {
 }
 
 impl Player {
-    /// Build a player positioned at the current version (index 0).
-    pub fn new(file: WalrusFile) -> Self {
-        let len = file.len();
+    /// Build a player positioned at the current version (index 0) over a
+    /// timeline whose far-end index is `len` (the number of change steps; the
+    /// inclusive seek range is `0..=len`).
+    pub fn new(len: usize) -> Self {
         Self {
-            file,
             index: 0,
             len,
             playing: false,
@@ -90,21 +91,6 @@ impl Player {
     /// Whether playback loops at the ends.
     pub fn looping(&self) -> bool {
         self.looping
-    }
-
-    /// Reconstruct the bytes of the current version.
-    pub fn current_bytes(&self) -> walrus_fmt::Result<Vec<u8>> {
-        self.file.reconstruct(Version::Index(self.index))
-    }
-
-    /// The manifest of the opened file (for document name/MIME and variant).
-    pub fn manifest(&self) -> &walrus_fmt::Manifest {
-        self.file.manifest()
-    }
-
-    /// The variant (`wal` / `wbl`) of the opened file.
-    pub fn variant(&self) -> walrus_fmt::Variant {
-        self.file.manifest().variant
     }
 
     /// Jump directly to a version index (clamped to range).
@@ -220,7 +206,6 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use walrus_fmt::ChangeRecord;
 
     // The stepping/loop logic is pure arithmetic on `index`/`len`; validate it
     // without needing a real file by testing a detached mini state machine that
@@ -289,10 +274,8 @@ mod tests {
 
     #[test]
     fn set_step_interval_clamps_sub_sixteen_millis_to_sixteen() {
-        let base = b"walrus".to_vec();
-        let log = vec![ChangeRecord::splice(0, 0, "a")];
-        let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid in-memory file");
-        let mut player = Player::new(file);
+        // A one-step timeline (len == 1); the clamp is independent of len.
+        let mut player = Player::new(1);
         player.set_step_interval(Duration::from_millis(1));
         assert_eq!(player.step_interval(), Duration::from_millis(16));
     }
@@ -315,13 +298,8 @@ mod tests {
     // INCREASES the index and "newer" DECREASES it.
 
     fn player_with_two_records() -> Player {
-        let base = b"walrus".to_vec();
-        let log = vec![
-            ChangeRecord::splice(0, 0, "a"),
-            ChangeRecord::splice(0, 0, "b"),
-        ];
-        let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid in-memory file");
-        Player::new(file)
+        // Two change steps give the inclusive index range 0..=2.
+        Player::new(2)
     }
 
     #[test]
