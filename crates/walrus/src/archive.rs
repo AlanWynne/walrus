@@ -1104,7 +1104,7 @@ mod tests {
     fn bound_tail_bytes_keeps_a_utf8_boundary() {
         // A string of two-byte chars truncated where a char would split must
         // return valid UTF-8 and <= max bytes (walking FORWARD to a boundary).
-        let s: String = std::iter::repeat('\u{00E9}').take(50).collect(); // 100 bytes
+        let s: String = "\u{00E9}".repeat(50); // 100 bytes (50 two-byte chars)
         let out = bound_tail_bytes(&s, 7);
         assert!(
             out.len() <= 7,
