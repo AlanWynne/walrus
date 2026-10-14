@@ -44,8 +44,15 @@ pub fn run_with(argv: &[String]) -> Result<u8> {
         return Ok(2);
     }
     // A top-level help request anywhere before `--` prints the banner (RC 0).
+    // Help takes precedence over version when both are present.
     if wants_top_level_help(argv) {
         print_usage();
+        return Ok(0);
+    }
+    // A top-level version request anywhere before `--` prints the version to
+    // stdout and exits 0 (standard CLI convention; version is normal output).
+    if wants_top_level_version(argv) {
+        print_version();
         return Ok(0);
     }
 
@@ -74,6 +81,32 @@ fn wants_top_level_help(argv: &[String]) -> bool {
         }
     }
     false
+}
+
+/// True when `-V`/`--version` appears as a top-level token before any `--`.
+///
+/// `-V` (uppercase) is the version short flag by GNU convention; `-v` is left
+/// free for a future `--verbose`. A `--` ends top-level option scanning, so a
+/// stored filename literally named `--version` after `--` is never mistaken
+/// for the flag.
+fn wants_top_level_version(argv: &[String]) -> bool {
+    for token in argv {
+        if token == "--" {
+            break;
+        }
+        if token == "-V" || token == "--version" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Print the binary name and crate version to stdout (e.g. `walrus 0.1.0`).
+///
+/// The version is the `walrus-cli` crate version resolved at compile time, so
+/// it always matches the built binary and needs no manual upkeep.
+pub fn print_version() {
+    println!("walrus {}", env!("CARGO_PKG_VERSION"));
 }
 
 /// Scan `argv` for the single operation and return it with the remaining
@@ -171,4 +204,45 @@ pub fn print_usage() {
          SELECTOR (at most one):\n\
          \x20 --index <n> | --version <current|original|+/-n> | --at <YYYY-MM-DDThh:mm:ssZ>\n"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn top_level_version_long_and_short_are_detected() {
+        assert!(wants_top_level_version(&argv(&["--version"])));
+        assert!(wants_top_level_version(&argv(&["-V"])));
+    }
+
+    #[test]
+    fn lowercase_v_is_not_the_version_flag() {
+        // -v is reserved for a future --verbose; only -V/--version print version.
+        assert!(!wants_top_level_version(&argv(&["-v"])));
+    }
+
+    #[test]
+    fn version_flag_after_double_dash_is_not_treated_as_the_flag() {
+        // After `--`, tokens are positionals (e.g. a stored name), not options.
+        assert!(!wants_top_level_version(&argv(&["add", "a.wal", "--", "--version"])));
+    }
+
+    #[test]
+    fn version_request_dispatches_to_rc0() {
+        assert_eq!(run_with(&argv(&["--version"])).unwrap(), 0);
+        assert_eq!(run_with(&argv(&["-V"])).unwrap(), 0);
+    }
+
+    #[test]
+    fn help_takes_precedence_over_version_when_both_present() {
+        // Both set -> help path; still RC 0, but the ordering is asserted so a
+        // future refactor cannot silently flip precedence.
+        assert!(wants_top_level_help(&argv(&["--help", "--version"])));
+        assert_eq!(run_with(&argv(&["--help", "--version"])).unwrap(), 0);
+    }
 }
