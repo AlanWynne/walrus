@@ -13,7 +13,7 @@
 //! straight through without remapping.
 
 use anyhow::{Context, Result};
-use walrus_fmt::{Archive, FileId, Version};
+use walrus_fmt::{Archive, FileId, Variant, Version};
 
 use super::{FileInfo, FileRef, HistoryEntry, HistorySource, VersionId, VersionMeta};
 
@@ -70,6 +70,17 @@ impl WalrusSource {
     /// `None` for a stale or foreign ref.
     fn tracked(&self, f: &FileRef) -> Option<&walrus_fmt::TrackedFile> {
         self.archive.files().nth(f.id())
+    }
+
+    /// The archive's forward/reverse [`Variant`] (`.wal` vs `.wbl`), read from
+    /// the manifest.
+    ///
+    /// The app-shell status bar needs the variant tag, but the shell may not
+    /// name `walrus_fmt` archive types directly (FR-K1 AC2); it reads the
+    /// variant through this accessor on the already-open source instead of
+    /// re-opening the file with the legacy single-file reader.
+    pub fn variant(&self) -> Variant {
+        self.archive.manifest().variant
     }
 }
 
@@ -519,6 +530,59 @@ mod tests {
         assert_eq!(name, "notes.txt");
         // TrackedFile::new_with_direction defaults the mime to text/plain.
         assert_eq!(mime, "text/plain");
+    }
+
+    #[test]
+    fn variant_reads_the_forward_wal_variant_from_the_manifest() {
+        // Regression for the GUI open path: the app shell reads the status-bar
+        // variant via WalrusSource::variant() on the ALREADY-open source, not by
+        // re-opening with the legacy single-file reader (which cannot read a
+        // multi-file archive). A forward container reports Wal.
+        let bytes = single_forward_container("f0", "notes.txt", b"hi", &[]);
+        let (_dir, source) = source_from(&bytes, "x.wal");
+        assert_eq!(source.variant(), Variant::Wal);
+    }
+
+    #[test]
+    fn variant_is_readable_from_a_multi_file_archive() {
+        // The exact shape that broke the GUI: a MULTI-FILE archive. It opens as
+        // a WalrusSource and reports its variant through variant() without the
+        // legacy WalrusFile::open path that failed with MissingMember("base").
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.files.push(TrackedFile::new_with_direction(
+            "a0",
+            "a.txt",
+            Direction::Forward,
+            0,
+        ));
+        manifest.files.push(TrackedFile::new_with_direction(
+            "b1",
+            "b.txt",
+            Direction::Forward,
+            0,
+        ));
+        let mut builder = tar::Builder::new(Vec::new());
+        append(
+            &mut builder,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).expect("m"),
+        );
+        let ha = WchgHeader::new(Direction::Forward, 0, "a.txt", "utf-8", 0);
+        let mut wa = serde_json::to_string(&ha).expect("ha");
+        wa.push('\n');
+        append(&mut builder, "files/a0/base", b"a");
+        append(&mut builder, "files/a0/a.txt.wchg", wa.as_bytes());
+        let hb = WchgHeader::new(Direction::Forward, 0, "b.txt", "utf-8", 0);
+        let mut wb = serde_json::to_string(&hb).expect("hb");
+        wb.push('\n');
+        append(&mut builder, "files/b1/base", b"b");
+        append(&mut builder, "files/b1/b.txt.wchg", wb.as_bytes());
+        let tar_bytes = builder.into_inner().expect("tar");
+        let bytes = zstd::stream::encode_all(&tar_bytes[..], 19).expect("zstd");
+
+        let (_dir, source) = source_from(&bytes, "two.wal");
+        assert_eq!(source.files().len(), 2);
+        assert_eq!(source.variant(), Variant::Wal);
     }
 
     #[test]

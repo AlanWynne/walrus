@@ -15,7 +15,7 @@
 use std::time::Instant;
 
 use eframe::egui;
-use walrus_fmt::{Variant, WalrusFile};
+use walrus_fmt::Variant;
 
 use crate::chrome::{self, ExportContext, StatusInfo};
 use crate::import::{ImportState, RfdPicker};
@@ -205,19 +205,16 @@ impl WalkerApp {
     /// export seam) and the concrete `WalrusSource` write handle (for the
     /// FR-K5/FR-K6 mutate path) from the same path.
     fn open_walrus(&mut self, path: std::path::PathBuf) {
-        // Fail fast with a precise message if the archive cannot be read.
-        let variant = match WalrusFile::open(&path) {
-            Ok(file) => file.manifest().variant,
-            Err(e) => {
-                self.status = format!("Failed to open {}: {e}", path.display());
-                return;
-            }
-        };
-
         // The format-agnostic read source is the single source of truth for the
         // navigator listing, the viewer, the status bar, and export. This is one
         // of only two app-shell sites that names `WalrusSource` (the other is the
         // write handle below); every read path sees `&dyn HistorySource`.
+        //
+        // Opening it is also the fail-fast point: a precise message surfaces
+        // here if the archive cannot be read. The forward/reverse variant for
+        // the status bar is read from this same open source via
+        // `WalrusSource::variant`, NOT by re-opening the file with the legacy
+        // single-file reader (which cannot read a multi-file archive).
         let read = match WalrusSource::open(&path) {
             Ok(source) => source,
             Err(e) => {
@@ -225,6 +222,7 @@ impl WalkerApp {
                 return;
             }
         };
+        let variant = read.variant();
         let (player, len) = self.bind_player(&read);
         self.status = format!("Opened {} ({} versions)", path.display(), len);
 
