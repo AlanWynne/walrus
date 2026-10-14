@@ -71,18 +71,35 @@ Phase 2 / Automerge cheap; see section 5.)
 ```
 enum VersionId { Index(usize), /* Heads(..) added in Phase 2 */ }
 struct VersionMeta { label: String, timestamp: Option<i64>, author: Option<String> }
+struct FileInfo { index_size: usize, generations: Option<u32>, size_bytes: u64, log_bytes: u64, mime: String }
 trait HistorySource {
     fn files(&self) -> Vec<FileRef>;                 // multi-file navigator
     fn versions(&self, f: &FileRef) -> Vec<VersionId>;
     fn reconstruct(&self, f: &FileRef, v: &VersionId) -> Result<Vec<u8>>;
     fn metadata(&self, f: &FileRef, v: &VersionId) -> VersionMeta;
     fn content_hint(&self, f: &FileRef) -> (String /*mime*/, String /*name*/);
+    fn file_info(&self, f: &FileRef) -> FileInfo;    // navigator listing + FR-K7 bloat
 }
 ```
 - AC1 The trait and `VersionId`/`VersionMeta` compile and are unit-tested with a
   fake in-memory source (no `walrus-fmt` needed for the test).
 - AC2 Transport/player/renderers reference ONLY the trait, not `walrus_fmt` types
   directly (verified by grep: no `walrus_fmt::Archive` outside `WalrusSource`).
+- NOTE (added by FR-K4, Option A): `file_info`/`FileInfo` were added to this
+  contract deliberately. `FileInfo` carries index size, generation cap, current
+  size, and a change-log byte figure so BOTH the FR-K4 navigator listing AND the
+  FR-K7 bloat ratio `R = log_bytes / size_bytes` compute from the trait alone.
+  It holds NO `walrus_fmt` types, so AC2 still holds. This was purely additive --
+  no existing method signature, `FileRef`, `VersionId`, or `VersionMeta` changed.
+- NOTE (added by FR-K9): `history`/`HistoryEntry` were added to this contract
+  deliberately. `history(&self, f: &FileRef) -> Vec<HistoryEntry>` returns the
+  file's change-log records in version-index order (0 = current, higher = older)
+  for the FR-K9 history viewer and its Markdown report; each `HistoryEntry`
+  carries the index it produced, an optional timestamp and note, and a
+  `SpliceSummary { at, deleted_len, inserted_len }`. Both `HistoryEntry` and
+  `SpliceSummary` are plain walker-side values holding NO `walrus_fmt` types, so
+  AC2 still holds. This was purely additive -- no existing method signature,
+  `FileRef`, `VersionId`, `VersionMeta`, or `FileInfo` changed.
 
 ### FR-K2 WalrusSource adapter -- BLOCKED on walrus-fmt section 1
 Implement `HistorySource` over the new `Archive` API: `files()` from

@@ -54,8 +54,19 @@ file and read it back with `read_file`:
 Then read `out.log`. An empty or missing log means the command did not run as
 expected -- do NOT assume success. Put a sentinel at the end of a script you
 control (e.g. echo `EXIT=$LASTEXITCODE` then `FINISHED`) so a truncated capture
-is obvious. These log/scratch files are EPHEMERAL: write them outside the repo
-or delete them before any commit (see cleanup below) -- never commit a
+is obvious.
+
+LOG LOCATION (MANDATORY): write every log/scratch file INSIDE the repo under the
+git-ignored `.gate/` folder (e.g. `.gate/frk1-clippy.log`). NEVER write to the
+system temp dir (`$env:TEMP`, `C:/Users/.../AppData/Local/Temp/...`) or any path
+outside the workspace: writes outside the workspace trigger a permission prompt
+for the user on every run, and the agent cannot clean them up afterwards without
+reaching outside the workspace again. `.gate/` is already git-ignored, so these
+files are never committed -- that satisfies the "do not commit scratch" rule
+below without leaving the workspace. In a worktree, use that worktree's own
+`.gate/` folder.
+
+These log/scratch files are EPHEMERAL -- never commit a
 `*-out.txt` / `gate-test*.txt` / `probe.txt` style scratch file.
 
 ### If output is empty

@@ -15,41 +15,37 @@ use std::time::Duration;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
-use walrus_fmt::{ChangeRecord, WalrusFile};
-
 use walker::player::Player;
 use walker::transport;
 
 /// Build a deterministic in-memory player with a known number of versions.
 ///
-/// Uses `WalrusFile::new_wal` so the test touches no disk and no fixture file
+/// The player is position-only (it owns an index/len, not a backend document),
+/// so a timeline of three change steps is `Player::new(3)`: `len() == 3`, so the
+/// index can advance 0 -> 1 and seek across `0..=3`. No disk and no fixture file
 /// (testing steering: deterministic, no external files outside tests/fixtures).
-/// Three splice records give `len() == 3`, so the index can advance 0 -> 1.
 fn player_with_three_versions() -> Player {
-    let base = b"walrus".to_vec();
-    let log = vec![
-        ChangeRecord::splice(0, 0, "a"),
-        ChangeRecord::splice(0, 0, "b"),
-        ChangeRecord::splice(0, 0, "c"),
-    ];
-    let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid in-memory file");
-    Player::new(file)
+    Player::new(3)
 }
 
-/// The transport "step >" button advances the player's version index, and the
-/// version label reflects the new index, driven entirely headlessly.
+/// FR-K3 AC1: a "step older" action INCREASES the model index (index 0 is the
+/// current version; a higher index is older), driven entirely headlessly.
 #[test]
-fn step_forward_button_advances_version_index_headless() {
+fn step_older_button_increases_version_index_headless() {
     let player = player_with_three_versions();
-    assert_eq!(player.index(), 0, "player starts positioned at the base");
+    assert_eq!(
+        player.index(),
+        0,
+        "player starts at the current version (index 0)"
+    );
 
     // The ui closure renders the smallest real transport slice: a step button
     // and a label showing the current index. The Player is the harness state so
     // the test can read back `index()` after frames run.
     let mut harness = Harness::new_ui_state(
         |ui, player: &mut Player| {
-            if ui.button("step >").clicked() {
-                player.step_forward();
+            if ui.button("< older").clicked() {
+                player.step_older();
             }
             ui.label(format!("version {}", player.index()));
         },
@@ -57,29 +53,144 @@ fn step_forward_button_advances_version_index_headless() {
     );
 
     // The initial label (built when the harness constructed the first frame)
-    // shows the base index.
+    // shows the current index.
     assert!(
         harness.query_by_label("version 0").is_some(),
-        "initial frame shows the base version label"
+        "initial frame shows the current version label"
     );
 
     // Click the step button through the accessibility tree, then run a single
     // frame to process the queued click. One `run()` is a fixed, bounded step --
     // no loop-until-timeout.
-    harness.get_by_label("step >").click();
+    harness.get_by_label("< older").click();
     harness.run();
 
-    // Model state advanced ...
+    // Model state moved to an OLDER version ...
     assert_eq!(
         harness.state().index(),
         1,
-        "clicking 'step >' advanced the player one version"
+        "clicking 'older' INCREASED the index toward older versions"
     );
     // ... and the rendered label reflects the new index.
     assert!(
         harness.query_by_label("version 1").is_some(),
-        "the version label re-rendered to the advanced index"
+        "the version label re-rendered to the older index"
     );
+}
+
+/// FR-K3 AC1: a "step newer" action DECREASES the model index, driven headlessly.
+#[test]
+fn step_newer_button_decreases_version_index_headless() {
+    let mut player = player_with_three_versions();
+    player.seek(2); // start on an older version so there is room to go newer.
+    assert_eq!(player.index(), 2, "player starts on an older version");
+
+    let mut harness = Harness::new_ui_state(
+        |ui, player: &mut Player| {
+            if ui.button("newer >").clicked() {
+                player.step_newer();
+            }
+            ui.label(format!("version {}", player.index()));
+        },
+        player,
+    );
+
+    assert!(
+        harness.query_by_label("version 2").is_some(),
+        "initial frame shows the older version label"
+    );
+
+    harness.get_by_label("newer >").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().index(),
+        1,
+        "clicking 'newer' DECREASED the index toward newer versions"
+    );
+    assert!(
+        harness.query_by_label("version 1").is_some(),
+        "the version label re-rendered to the newer index"
+    );
+}
+
+/// FR-K3 AC1: seeking to index 0 shows the CURRENT version, driven headlessly.
+#[test]
+fn seek_to_zero_shows_the_current_version_headless() {
+    let mut player = player_with_three_versions();
+    player.seek(3); // park on the oldest version first.
+    assert_eq!(player.index(), 3, "player starts on the oldest version");
+
+    let mut harness = Harness::new_ui_state(
+        |ui, player: &mut Player| {
+            if ui.button("current >|").clicked() {
+                player.seek(0);
+            }
+            ui.label(format!("version {}", player.index()));
+        },
+        player,
+    );
+
+    assert!(
+        harness.query_by_label("version 3").is_some(),
+        "initial frame shows the oldest version label"
+    );
+
+    harness.get_by_label("current >|").click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().index(),
+        0,
+        "seeking to 0 shows the current version"
+    );
+    assert!(
+        harness.query_by_label("version 0").is_some(),
+        "the version label re-rendered to the current index 0"
+    );
+}
+
+/// FR-K3 AC3: the real transport renders time-oriented labels that read
+/// correctly under index-0-is-current. There must be NO leftover
+/// "forward = toward head = newer" wording from the old single-file model: the
+/// buttons read "oldest / older / newer / current", and the direction toggle
+/// reads "older / newer" -- asserted on the accessibility tree, not pixels.
+#[test]
+fn transport_labels_read_correctly_under_index_zero_is_current() {
+    let player = player_with_three_versions();
+    let mut multiplier = 1.0_f64;
+    let mut harness = Harness::new_ui_state(
+        move |ui, player: &mut Player| {
+            transport::controls(ui, player, &mut multiplier);
+        },
+        player,
+    );
+    harness.run();
+
+    for label in [
+        "|< oldest",
+        "< older",
+        "newer >",
+        "current >|",
+        "older",
+        "newer",
+    ] {
+        assert!(
+            harness.query_by_label(label).is_some(),
+            "the transport renders the '{label}' control under index-0-is-current"
+        );
+    }
+
+    // The old single-file labels MUST be gone -- their presence is the leftover
+    // the acceptance criterion forbids.
+    for stale in [
+        "|< base", "head >|", "forward", "backward", "step >", "< step",
+    ] {
+        assert!(
+            harness.query_by_label(stale).is_none(),
+            "the stale single-file label '{stale}' must not appear"
+        );
+    }
 }
 
 /// Clicking a speed preset drives the player's model interval through the real

@@ -106,6 +106,26 @@ scoped `-p <crate>` checks with the full gate as the owner's manual step.
     reality. (FORMAT.md / CLI-DESIGN.md are the source of truth.) This ROADMAP
     status refresh is part of step 10.
 
+## Walker frontend (step 9) -- per-FR honest state
+
+Tracked in detail in `.agents/tasks/requirements-walker.md`; the load-bearing
+cross-stream note:
+
+- FR-K1 source seam, FR-K2 WalrusSource adapter, FR-K4 two-pane navigator: done.
+- FR-K5 import = add/update (resolved automatically): DONE and LIVE. The
+  FilePicker seam (real `rfd` + test fake), the pure `ImportResolution` state
+  machine (add / update-prompt / add-as), the `WalrusSource` import
+  orchestration via the `MutateArchive` seam, and the navigator/app wiring are
+  all done and headless-tested GREEN. Byte-mutation is no longer gated: FR-W7's
+  `walrus_fmt::Archive::add` is merged on this branch, so the real
+  `MutateArchive` impl and `WalrusSource::import` are unconditional (the
+  `import-mutate` feature was removed), and the on-disk AC1 +
+  transactional-guarantee tests (`tests/import.rs::on_disk`) compile and PASS by
+  default. Both create and append route through `Archive::add` (a tracked-name
+  `add` records a save), so the `diff`-gated `Archive::update(bytes)` is not
+  needed. The only MANUAL carve-out remains the real `rfd` pick. The write path
+  is deliberately CONCRETE (off the read-only `HistorySource` trait).
+
 ## Walrus-core follow-ups still open (small)
 
 - `--at` timestamp addressing: COVERED by `tests/acceptance/walrus_cli/

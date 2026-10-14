@@ -1,26 +1,38 @@
-//! The playback state machine: step/play a Walrus file forward and backward,
-//! with speed and loop, independent of any GUI.
+//! The playback state machine: step/play a Walrus file toward older or newer
+//! versions, with speed and loop, independent of any GUI.
+//!
+//! Index 0 is the CURRENT version and a HIGHER index is OLDER (locked format
+//! decision): stepping "older" increases the index, stepping "newer" decreases
+//! it. The arithmetic is pure; only the time-vs-index mapping and the labels
+//! carry the index-flip semantics.
 
 use std::time::Duration;
 
-use walrus_fmt::{Version, WalrusFile};
-
-/// Direction the auto-player advances.
+/// Direction the auto-player advances along the version timeline.
+///
+/// Index 0 is the CURRENT version and a HIGHER index is an OLDER version
+/// (locked format decision). The variants are therefore named for TIME, not for
+/// index arithmetic: `Older` steps back in time (INCREASING the index) and
+/// `Newer` steps forward in time (DECREASING the index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// Toward the head (higher indices).
-    Forward,
-    /// Toward the base (lower indices).
-    Backward,
+    /// Back in time toward older versions (increasing index).
+    Older,
+    /// Forward in time toward newer versions (decreasing index), down to the
+    /// current version at index 0.
+    Newer,
 }
 
-/// Playback state over an opened Walrus file.
+/// Playback state over a version timeline, addressed by position only.
 ///
-/// The player owns the current version index and the auto-advance settings.
-/// A GUI drives it by calling [`Player::tick`] with elapsed time each frame and
-/// rendering [`Player::current_bytes`].
+/// The player owns the current version index (0 = current, higher = older), the
+/// far-end index `len`, and the auto-advance settings. It does NOT own any
+/// backend document: byte reconstruction flows through the active
+/// [`HistorySource`](crate::source::HistorySource) in the app shell, so a single
+/// state machine drives every backend. A GUI drives it by calling
+/// [`Player::tick`] with elapsed time each frame and refreshing the displayed
+/// bytes from the source when a step reports a change.
 pub struct Player {
-    file: WalrusFile,
     index: usize,
     len: usize,
     playing: bool,
@@ -33,15 +45,15 @@ pub struct Player {
 }
 
 impl Player {
-    /// Build a player positioned at the base (index 0).
-    pub fn new(file: WalrusFile) -> Self {
-        let len = file.len();
+    /// Build a player positioned at the current version (index 0) over a
+    /// timeline whose far-end index is `len` (the number of change steps; the
+    /// inclusive seek range is `0..=len`).
+    pub fn new(len: usize) -> Self {
         Self {
-            file,
             index: 0,
             len,
             playing: false,
-            direction: Direction::Forward,
+            direction: Direction::Older,
             looping: false,
             step_interval: Duration::from_millis(400),
             accumulated: Duration::ZERO,
@@ -81,28 +93,16 @@ impl Player {
         self.looping
     }
 
-    /// Reconstruct the bytes of the current version.
-    pub fn current_bytes(&self) -> walrus_fmt::Result<Vec<u8>> {
-        self.file.reconstruct(Version::Index(self.index))
-    }
-
-    /// The manifest of the opened file (for document name/MIME and variant).
-    pub fn manifest(&self) -> &walrus_fmt::Manifest {
-        self.file.manifest()
-    }
-
-    /// The variant (`wal` / `wbl`) of the opened file.
-    pub fn variant(&self) -> walrus_fmt::Variant {
-        self.file.manifest().variant
-    }
-
     /// Jump directly to a version index (clamped to range).
     pub fn seek(&mut self, index: usize) {
         self.index = index.min(self.len);
     }
 
-    /// Step one version toward the head; returns true if it moved.
-    pub fn step_forward(&mut self) -> bool {
+    /// Step one version OLDER (back in time); returns true if it moved.
+    ///
+    /// Index 0 is the current version and a higher index is older, so stepping
+    /// older INCREASES the index, up to the oldest version at `len`.
+    pub fn step_older(&mut self) -> bool {
         if self.index < self.len {
             self.index += 1;
             true
@@ -111,8 +111,10 @@ impl Player {
         }
     }
 
-    /// Step one version toward the base; returns true if it moved.
-    pub fn step_backward(&mut self) -> bool {
+    /// Step one version NEWER (forward in time); returns true if it moved.
+    ///
+    /// Stepping newer DECREASES the index, down to the current version at 0.
+    pub fn step_newer(&mut self) -> bool {
         if self.index > 0 {
             self.index -= 1;
             true
@@ -173,10 +175,11 @@ impl Player {
     /// Perform a single automatic step honouring direction and loop.
     fn advance_one(&mut self) -> bool {
         match self.direction {
-            Direction::Forward => {
-                if self.step_forward() {
+            Direction::Older => {
+                if self.step_older() {
                     true
                 } else if self.looping {
+                    // Wrap from the oldest back to the current version.
                     self.index = 0;
                     true
                 } else {
@@ -184,10 +187,11 @@ impl Player {
                     false
                 }
             }
-            Direction::Backward => {
-                if self.step_backward() {
+            Direction::Newer => {
+                if self.step_newer() {
                     true
                 } else if self.looping {
+                    // Wrap from the current version back to the oldest.
                     self.index = self.len;
                     true
                 } else {
@@ -202,7 +206,6 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use walrus_fmt::ChangeRecord;
 
     // The stepping/loop logic is pure arithmetic on `index`/`len`; validate it
     // without needing a real file by testing a detached mini state machine that
@@ -217,7 +220,7 @@ mod tests {
     impl Mini {
         fn advance(&mut self) {
             match self.dir {
-                Direction::Forward => {
+                Direction::Older => {
                     if self.index < self.len {
                         self.index += 1;
                     } else if self.looping {
@@ -226,7 +229,7 @@ mod tests {
                         self.playing = false;
                     }
                 }
-                Direction::Backward => {
+                Direction::Newer => {
                     if self.index > 0 {
                         self.index -= 1;
                     } else if self.looping {
@@ -240,15 +243,15 @@ mod tests {
     }
 
     #[test]
-    fn forward_stops_at_head_without_loop() {
+    fn older_stops_at_the_oldest_without_loop() {
         let mut m = Mini {
             index: 1,
             len: 2,
             looping: false,
-            dir: Direction::Forward,
+            dir: Direction::Older,
             playing: true,
         };
-        m.advance(); // 2 (head)
+        m.advance(); // 2 (oldest)
         assert_eq!(m.index, 2);
         m.advance(); // stays, stops
         assert_eq!(m.index, 2);
@@ -256,12 +259,12 @@ mod tests {
     }
 
     #[test]
-    fn forward_wraps_at_head_with_loop() {
+    fn older_wraps_to_current_with_loop() {
         let mut m = Mini {
             index: 2,
             len: 2,
             looping: true,
-            dir: Direction::Forward,
+            dir: Direction::Older,
             playing: true,
         };
         m.advance();
@@ -271,24 +274,76 @@ mod tests {
 
     #[test]
     fn set_step_interval_clamps_sub_sixteen_millis_to_sixteen() {
-        let base = b"walrus".to_vec();
-        let log = vec![ChangeRecord::splice(0, 0, "a")];
-        let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid in-memory file");
-        let mut player = Player::new(file);
+        // A one-step timeline (len == 1); the clamp is independent of len.
+        let mut player = Player::new(1);
         player.set_step_interval(Duration::from_millis(1));
         assert_eq!(player.step_interval(), Duration::from_millis(16));
     }
 
     #[test]
-    fn backward_wraps_at_base_with_loop() {
+    fn newer_wraps_to_oldest_with_loop() {
         let mut m = Mini {
             index: 0,
             len: 2,
             looping: true,
-            dir: Direction::Backward,
+            dir: Direction::Newer,
             playing: true,
         };
         m.advance();
         assert_eq!(m.index, 2);
+    }
+
+    // === FR-K3 index-flip semantics ====================================
+    // Index 0 is the CURRENT version; a HIGHER index is OLDER. "Older"
+    // INCREASES the index and "newer" DECREASES it.
+
+    fn player_with_two_records() -> Player {
+        // Two change steps give the inclusive index range 0..=2.
+        Player::new(2)
+    }
+
+    #[test]
+    fn step_older_increases_the_index() {
+        let mut player = player_with_two_records();
+        assert_eq!(
+            player.index(),
+            0,
+            "a fresh player sits at the current version"
+        );
+        assert!(player.step_older(), "stepping older from current moves");
+        assert_eq!(player.index(), 1, "stepping older INCREASES the index");
+    }
+
+    #[test]
+    fn step_newer_decreases_the_index() {
+        let mut player = player_with_two_records();
+        player.seek(2);
+        assert!(player.step_newer(), "stepping newer from the oldest moves");
+        assert_eq!(player.index(), 1, "stepping newer DECREASES the index");
+    }
+
+    #[test]
+    fn step_older_stops_at_the_oldest() {
+        let mut player = player_with_two_records();
+        player.seek(player.len());
+        assert!(
+            !player.step_older(),
+            "cannot step older past the oldest version"
+        );
+        assert_eq!(player.index(), 2, "the index stays pinned at the oldest");
+    }
+
+    #[test]
+    fn step_newer_stops_at_the_current_version() {
+        let mut player = player_with_two_records();
+        assert!(
+            !player.step_newer(),
+            "cannot step newer past the current version"
+        );
+        assert_eq!(
+            player.index(),
+            0,
+            "the index stays pinned at index 0 (current)"
+        );
     }
 }

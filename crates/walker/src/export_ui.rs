@@ -14,6 +14,20 @@ use anyhow::{Context, Result};
 use eframe::egui;
 use walrus_fmt::export::{self, ExportFormat};
 
+use crate::source::{FileRef, HistorySource};
+
+/// The formats offered for `file`, derived from the source's content hint.
+///
+/// The offered-format list keys off the same `(mime, name)` pair that drives
+/// renderer choice (FR-K10): the mime from [`HistorySource::content_hint`] is
+/// handed to `walrus_fmt::export::offered_formats`, the single source of truth
+/// for which formats a document type supports. Export stays Walker-exclusive --
+/// this only consults the pure, always-compiled metadata, not any archive.
+pub fn offered_formats_for(source: &dyn HistorySource, file: &FileRef) -> Vec<ExportFormat> {
+    let (mime, _name) = source.content_hint(file);
+    export::offered_formats(&mime)
+}
+
 /// The default file extension for an export format (Original is handled by the
 /// caller, which uses `document.name`).
 fn extension_for(format: ExportFormat) -> &'static str {
@@ -125,6 +139,52 @@ fn run_export(format: ExportFormat, doc: &[u8], mime: &str, document_name: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::testsupport::InMemorySource;
+
+    #[test]
+    fn export_menu_offers_csv_for_a_csv_file() {
+        let source = InMemorySource::sample();
+        let file = source.file_named("data.csv");
+        let offered = offered_formats_for(&source, &file);
+        assert!(
+            offered.contains(&ExportFormat::Csv),
+            "a text/csv file must offer CSV export"
+        );
+    }
+
+    #[test]
+    fn export_menu_omits_csv_for_a_non_csv_file() {
+        let source = InMemorySource::sample();
+        let file = source.file_named("README.md");
+        let offered = offered_formats_for(&source, &file);
+        assert!(
+            !offered.contains(&ExportFormat::Csv),
+            "a non-csv file must not offer CSV export"
+        );
+    }
+
+    #[test]
+    fn export_menu_always_offers_original_and_plain_text() {
+        let source = InMemorySource::sample();
+        for name in [
+            "README.md",
+            "data.csv",
+            "page.html",
+            "data.json",
+            "notes.txt",
+        ] {
+            let file = source.file_named(name);
+            let offered = offered_formats_for(&source, &file);
+            assert!(
+                offered.contains(&ExportFormat::Original),
+                "{name} must offer Original"
+            );
+            assert!(
+                offered.contains(&ExportFormat::PlainText),
+                "{name} must offer Plain text"
+            );
+        }
+    }
 
     #[test]
     fn original_keeps_the_stored_name_verbatim() {
