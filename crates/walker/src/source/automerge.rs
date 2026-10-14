@@ -48,50 +48,6 @@ mod automerge_shape;
 
 use automerge_shape::Shape;
 
-// === magic-byte sniff ===================================================
-
-// The sniff helper and the magic-byte constants are the FEAT-003 deliverable
-// that the open-path dispatch (FEAT-004) consumes; they are referenced by the
-// adapter's own tests here but not yet by non-test code, so a dead-code allow
-// keeps the FEAT-003 build clean under `-D warnings` until FEAT-004 lands.
-/// The leading bytes that identify an Automerge document container.
-pub(crate) const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6F, 0x4A, 0x83];
-/// The leading bytes of a zstd frame (a Walrus container codec).
-#[allow(dead_code)]
-pub(crate) const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
-/// The leading bytes of a gzip member (a Walrus container codec).
-#[allow(dead_code)]
-pub(crate) const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
-
-/// Which backend a file's leading bytes identify.
-///
-/// The file extension is a hint only; the magic bytes decide (FR-K11.1,
-/// FORMAT.md section 2).
-#[allow(dead_code)] // Consumed by the FEAT-004 open-path dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    /// An Automerge document (leading [`AUTOMERGE_MAGIC`]).
-    Automerge,
-    /// A Walrus `.wal`/`.wbl` container (zstd/gzip, or anything else so the
-    /// walrus reader can surface a precise error).
-    Walrus,
-}
-
-/// Classify a file by its leading bytes.
-///
-/// Returns [`Backend::Automerge`] only for the exact [`AUTOMERGE_MAGIC`] prefix;
-/// zstd/gzip prefixes, unrecognised bytes, and inputs shorter than four bytes
-/// all fall through to [`Backend::Walrus`] (which errors cleanly if the file is
-/// not actually a Walrus container).
-#[allow(dead_code)] // Consumed by the FEAT-004 open-path dispatch.
-pub fn sniff_backend(head: &[u8]) -> Backend {
-    if head.starts_with(&AUTOMERGE_MAGIC) {
-        Backend::Automerge
-    } else {
-        Backend::Walrus
-    }
-}
-
 // === AutomergeSource ====================================================
 
 /// A read-only [`HistorySource`] backed by a loaded `automerge` document.
@@ -439,27 +395,6 @@ mod tests {
 
     fn open(bytes: &[u8], name: &str) -> AutomergeSource {
         AutomergeSource::from_bytes(bytes, name.to_string()).expect("load document")
-    }
-
-    // === sniff ==========================================================
-
-    #[test]
-    fn sniff_backend_classifies_the_automerge_magic_as_automerge() {
-        let head = [0x85, 0x6F, 0x4A, 0x83, 0x00, 0x11];
-        assert_eq!(sniff_backend(&head), Backend::Automerge);
-    }
-
-    #[test]
-    fn sniff_backend_classifies_zstd_and_gzip_prefixes_as_walrus() {
-        assert_eq!(sniff_backend(&[0x28, 0xB5, 0x2F, 0xFD]), Backend::Walrus);
-        assert_eq!(sniff_backend(&[0x1F, 0x8B, 0x08, 0x00]), Backend::Walrus);
-    }
-
-    #[test]
-    fn sniff_backend_classifies_junk_and_short_input_as_walrus() {
-        assert_eq!(sniff_backend(&[0xDE, 0xAD, 0xBE, 0xEF]), Backend::Walrus);
-        assert_eq!(sniff_backend(&[0x85, 0x6F]), Backend::Walrus);
-        assert_eq!(sniff_backend(&[]), Backend::Walrus);
     }
 
     // === files + shape ==================================================

@@ -21,7 +21,7 @@ use crate::chrome::{self, ExportContext, StatusInfo};
 use crate::import::{ImportState, RfdPicker};
 use crate::navigator::{self, NavigatorState};
 use crate::player::Player;
-use crate::source::{HistorySource, WalrusSource};
+use crate::source::{sniff_backend, Backend, HistorySource, WalrusSource};
 use crate::theme::{self, ThemeMode};
 use crate::transport;
 use crate::view::{self, Renderer};
@@ -35,7 +35,11 @@ enum SourceKind {
     /// A `.wal`/`.wbl` archive, carrying its forward/reverse variant.
     Walrus(Variant),
     /// An Automerge document (read-only; no `.wal`/`.wbl` variant).
-    #[allow(dead_code)] // Populated by the FEAT-003 automerge open path.
+    ///
+    /// Constructed only by the feature-ON Automerge open path; with the feature
+    /// off the variant is never built (but `variant_str` still matches it), so
+    /// the dead-code allow is scoped to the feature-off build.
+    #[cfg_attr(not(feature = "automerge"), allow(dead_code))]
     Automerge,
 }
 
@@ -137,6 +141,70 @@ impl WalkerApp {
     /// active file's version count through the trait, so playback flows through
     /// one byte path regardless of backend.
     fn open_file(&mut self, path: std::path::PathBuf) {
+        // The leading bytes -- NOT the extension -- decide the backend
+        // (FR-K11.1, FORMAT.md section 2). Read a short head and sniff it; a
+        // read failure surfaces the same way a failed open does.
+        let head = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.status = format!("Failed to open {}: {e}", path.display());
+                return;
+            }
+        };
+        match sniff_backend(&head) {
+            Backend::Automerge => self.open_automerge(path),
+            Backend::Walrus => self.open_walrus(path),
+        }
+    }
+
+    /// Open an Automerge document sniffed from the magic bytes.
+    ///
+    /// Gated on the `automerge` feature: with the feature ON this builds an
+    /// `AutomergeSource` into the boxed read source (read-only; the concrete
+    /// `WalrusSource` write handle stays `None`). With the feature OFF a
+    /// recognised Automerge file is NOT mis-opened as a walrus container; the
+    /// status reports that support is not built in and nothing is loaded.
+    #[cfg(feature = "automerge")]
+    fn open_automerge(&mut self, path: std::path::PathBuf) {
+        use crate::source::AutomergeSource;
+
+        // The read-only format-agnostic source. Automerge has no `.wal`/`.wbl`
+        // write path, so the concrete `WalrusSource` write handle stays `None`
+        // (the FR-K5/FR-K6 mutate controls are inert, which is correct).
+        let read = match AutomergeSource::open(&path) {
+            Ok(source) => source,
+            Err(e) => {
+                self.status = format!("Failed to open {}: {e}", path.display());
+                return;
+            }
+        };
+        let (player, len) = self.bind_player(&read);
+        self.status = format!("Opened {} ({} versions)", path.display(), len);
+        self.write_source = None;
+        self.source_kind = Some(SourceKind::Automerge);
+        self.read_source = Some(Box::new(read));
+        self.player = Some(player);
+        self.path = Some(path);
+        self.refresh_bytes();
+    }
+
+    /// Feature-OFF stub for an Automerge-sniffed file: report that Automerge
+    /// support is not built into this Walker and load nothing. The leading
+    /// bytes already identified the file as Automerge, so it must NOT fall
+    /// through to the walrus reader.
+    #[cfg(not(feature = "automerge"))]
+    fn open_automerge(&mut self, _path: std::path::PathBuf) {
+        self.status =
+            "Automerge support is not built into this Walker (rebuild with --features automerge)."
+                .to_string();
+    }
+
+    /// Open a `.wal`/`.wbl` archive (the Phase-1 path, unchanged).
+    ///
+    /// Builds BOTH the boxed read source (for the viewer/player/status-bar/
+    /// export seam) and the concrete `WalrusSource` write handle (for the
+    /// FR-K5/FR-K6 mutate path) from the same path.
+    fn open_walrus(&mut self, path: std::path::PathBuf) {
         // Fail fast with a precise message if the archive cannot be read.
         let variant = match WalrusFile::open(&path) {
             Ok(file) => file.manifest().variant,
@@ -157,22 +225,7 @@ impl WalkerApp {
                 return;
             }
         };
-
-        // Default the active selection to the first tracked file so the viewer
-        // binds through the seam immediately, and build the position-only player
-        // from that file's version count (0 = current, far index = original).
-        let active = read.files().first().cloned();
-        if let Some(first) = active.as_ref() {
-            self.navigator.select(first);
-            self.renderer = navigator_renderer(&read, &self.navigator);
-        }
-        let len = active
-            .as_ref()
-            .map(|f| read.versions(f).len().saturating_sub(1))
-            .unwrap_or(0);
-        let mut player = Player::new(len);
-        player.seek(0);
-        transport::set_speed_multiplier(&mut player, self.speed);
+        let (player, len) = self.bind_player(&read);
         self.status = format!("Opened {} ({} versions)", path.display(), len);
 
         // The concrete write handle for the FR-K5/FR-K6 mutate path, reopened
@@ -187,6 +240,26 @@ impl WalkerApp {
         self.path = Some(path);
         // Refresh the cached bytes through the one source-driven path.
         self.refresh_bytes();
+    }
+
+    /// Default the active selection to the first tracked file, bind the
+    /// viewer's renderer through the seam, and build the position-only player
+    /// from that file's version count (0 = current, far index = original).
+    /// Returns the player and the far index `len`. One path for both backends.
+    fn bind_player(&mut self, read: &dyn HistorySource) -> (Player, usize) {
+        let active = read.files().first().cloned();
+        if let Some(first) = active.as_ref() {
+            self.navigator.select(first);
+            self.renderer = navigator_renderer(read, &self.navigator);
+        }
+        let len = active
+            .as_ref()
+            .map(|f| read.versions(f).len().saturating_sub(1))
+            .unwrap_or(0);
+        let mut player = Player::new(len);
+        player.seek(0);
+        transport::set_speed_multiplier(&mut player, self.speed);
+        (player, len)
     }
 
     /// Refresh the cached current-version bytes from the ACTIVE SOURCE at the
@@ -225,9 +298,17 @@ impl WalkerApp {
     }
 
     /// Open the native file dialog and load the chosen file.
+    ///
+    /// The dialog's extension filter is a HINT only; the magic-byte sniff in
+    /// `open_file` decides the backend. The `automerge`/`amrg` hint extensions
+    /// are offered only when the `automerge` feature is built in.
     fn prompt_open(&mut self) {
+        #[cfg(feature = "automerge")]
+        let extensions: &[&str] = &["wal", "wbl", "automerge", "amrg"];
+        #[cfg(not(feature = "automerge"))]
+        let extensions: &[&str] = &["wal", "wbl"];
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Walrus", &["wal", "wbl"])
+            .add_filter("Walrus", extensions)
             .pick_file()
         {
             self.open_file(path);
@@ -450,5 +531,80 @@ impl eframe::App for WalkerApp {
                 });
             }
         });
+    }
+}
+
+// === Tests ==============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Write `bytes` to a uniquely named file under a fresh temp dir and return
+    /// both so the dir lives for the test's duration.
+    fn temp_file_with(bytes: &[u8], name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("make temp dir");
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).expect("create fixture file");
+        f.write_all(bytes).expect("write fixture bytes");
+        (dir, path)
+    }
+
+    /// A file whose leading bytes are the Automerge magic. The remaining bytes
+    /// are junk: a feature-OFF open never decodes it (it is rejected at the
+    /// sniff), and the feature-ON arm is proven by the headless harness with a
+    /// REAL document, so junk is enough to exercise the sniff routing here.
+    fn automerge_magic_file() -> (tempfile::TempDir, std::path::PathBuf) {
+        temp_file_with(&[0x85, 0x6F, 0x4A, 0x83, 0x00, 0x01, 0x02], "doc.amrg")
+    }
+
+    /// FR-K11 AC1 (shell half): a file whose leading bytes are the Automerge
+    /// magic routes to the Automerge arm, NOT the walrus arm, regardless of its
+    /// `.amrg` extension being unknown to the walrus reader.
+    ///
+    /// Feature OFF: the Automerge arm reports "not built in" and loads nothing
+    /// (no source, no player) rather than mis-opening it as a walrus file.
+    #[cfg(not(feature = "automerge"))]
+    #[test]
+    fn an_automerge_sniffed_file_reports_not_built_in_when_the_feature_is_off() {
+        let (_dir, path) = automerge_magic_file();
+        let mut app = WalkerApp::default();
+        app.open_file(path);
+        assert!(
+            app.status.contains("Automerge support is not built"),
+            "feature-off open of an Automerge-sniffed file must report it is \
+             not built in, got: {}",
+            app.status
+        );
+        assert!(
+            app.read_source.is_none(),
+            "feature-off Automerge open must load no source"
+        );
+        assert!(
+            app.player.is_none(),
+            "feature-off Automerge open must build no player"
+        );
+    }
+
+    /// FR-K11 AC2 (feature off, Phase-1 unchanged): a non-Automerge file still
+    /// routes to the walrus arm. A junk (non-container) file surfaces the
+    /// walrus reader's precise open error, NOT the Automerge "not built in"
+    /// message, proving the sniff did not misroute it.
+    #[test]
+    fn a_non_automerge_file_routes_to_the_walrus_arm() {
+        let (_dir, path) = temp_file_with(b"not a real walrus container", "junk.wal");
+        let mut app = WalkerApp::default();
+        app.open_file(path);
+        assert!(
+            !app.status.contains("Automerge support is not built"),
+            "a non-Automerge file must not hit the Automerge arm, got: {}",
+            app.status
+        );
+        assert!(
+            app.status.contains("Failed to open"),
+            "a junk .wal file routes to the walrus arm and surfaces its open \
+             error, got: {}",
+            app.status
+        );
     }
 }

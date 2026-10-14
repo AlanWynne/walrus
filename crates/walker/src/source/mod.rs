@@ -30,6 +30,49 @@ mod automerge_src;
 #[cfg(feature = "automerge")]
 pub use automerge_src::AutomergeSource;
 
+// === magic-byte sniff ===================================================
+
+// The sniff helper and its magic-byte constants live here (NOT in the
+// feature-gated automerge adapter) because the open path must classify a file
+// in BOTH feature states: a feature-OFF build still needs to RECOGNISE an
+// Automerge file so it can report that support is not built in, rather than
+// mis-opening it as a walrus container. None of these items name an `automerge`
+// type, so they are dependency-free (INV-2) and compile with the feature off.
+
+/// The leading bytes that identify an Automerge document container.
+pub const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6F, 0x4A, 0x83];
+/// The leading bytes of a zstd frame (a Walrus container codec).
+pub const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+/// The leading bytes of a gzip member (a Walrus container codec).
+pub const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
+
+/// Which backend a file's leading bytes identify.
+///
+/// The file extension is a hint only; the magic bytes decide (FR-K11.1,
+/// FORMAT.md section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// An Automerge document (leading [`AUTOMERGE_MAGIC`]).
+    Automerge,
+    /// A Walrus `.wal`/`.wbl` container (zstd/gzip, or anything else so the
+    /// walrus reader can surface a precise error).
+    Walrus,
+}
+
+/// Classify a file by its leading bytes.
+///
+/// Returns [`Backend::Automerge`] only for the exact [`AUTOMERGE_MAGIC`] prefix;
+/// zstd/gzip prefixes, unrecognised bytes, and inputs shorter than four bytes
+/// all fall through to [`Backend::Walrus`] (which errors cleanly if the file is
+/// not actually a Walrus container).
+pub fn sniff_backend(head: &[u8]) -> Backend {
+    if head.starts_with(&AUTOMERGE_MAGIC) {
+        Backend::Automerge
+    } else {
+        Backend::Walrus
+    }
+}
+
 /// A plain walker-side Automerge change-hash: the 32-byte hash rendered as a
 /// lowercase hex string.
 ///
@@ -594,6 +637,27 @@ mod tests {
                 })
                 .collect()
         }
+    }
+
+    // === magic-byte sniff (FR-K11) ======================================
+
+    #[test]
+    fn sniff_backend_classifies_the_automerge_magic_as_automerge() {
+        let head = [0x85, 0x6F, 0x4A, 0x83, 0x00, 0x11];
+        assert_eq!(sniff_backend(&head), Backend::Automerge);
+    }
+
+    #[test]
+    fn sniff_backend_classifies_zstd_and_gzip_prefixes_as_walrus() {
+        assert_eq!(sniff_backend(&[0x28, 0xB5, 0x2F, 0xFD]), Backend::Walrus);
+        assert_eq!(sniff_backend(&[0x1F, 0x8B, 0x08, 0x00]), Backend::Walrus);
+    }
+
+    #[test]
+    fn sniff_backend_classifies_junk_and_short_input_as_walrus() {
+        assert_eq!(sniff_backend(&[0xDE, 0xAD, 0xBE, 0xEF]), Backend::Walrus);
+        assert_eq!(sniff_backend(&[0x85, 0x6F]), Backend::Walrus);
+        assert_eq!(sniff_backend(&[]), Backend::Walrus);
     }
 
     // === VersionId::Heads + HeadId (FR-K11 FEAT-001) ====================
