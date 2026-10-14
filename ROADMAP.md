@@ -3,15 +3,25 @@
 This records the honest state of each piece so the next session can pick up
 without re-discovering it.
 
-IMPORTANT -- a FORMAT-BREAKING revision is in progress. The format moved from
-SINGLE-FILE to MULTI-FILE (an archive now holds many tracked files, each with its
-own base and its own `.wchg` change log and its own index range). The authoritative
-spec is [`FORMAT.md`](FORMAT.md) (already rewritten) and the design decisions are
-in [`CLI-DESIGN.md`](CLI-DESIGN.md). Much of the "Done" work below was built for
-the OLD single-file format and must be re-worked; it is marked accordingly.
+STATUS (2026-10-13): the FORMAT-BREAKING single-file -> MULTI-FILE revision is
+DONE for walrus-core and shipped on `main`. An archive holds many tracked files,
+each with its own base, `.wchg` change log, and independent index range. The
+authoritative spec is [`FORMAT.md`](FORMAT.md); design decisions are in
+[`CLI-DESIGN.md`](CLI-DESIGN.md). The library (`walrus-fmt`), both CLIs (`walx`
+extract-only, `walrus` full management), the shared `wal-cli-common`, the
+regenerated examples, and an exhaustive Python acceptance suite + TCR are all on
+main. The historical gap report at
+`.agents/tasks/format-breaking-gap-report.md` records the original file-by-file
+audit; the sequence it drove is now complete (see "Format re-work sequence"
+below, all steps DONE).
 
-See the gap report at `.agents/tasks/format-breaking-gap-report.md` for the
-file-by-file audit and the ordered re-work sequence this roadmap follows.
+WALKER (the GUI frontend) is the one dependent piece NOT yet migrated: it still
+opens archives via the legacy single-file `WalrusFile::open` and so fails on the
+new multi-file fixtures (`MissingMember("base")`). Walker lives on its own
+branches (`feature/walker-gui`, `feature/walker-automerge`,
+`docs/walker-git-source`) and is worked in a separate stream. Migrating walker to
+the `Archive` API is the outstanding cross-stream task; walrus-core already
+exposes everything walker needs.
 
 ## Design decisions locked (see CLI-DESIGN.md)
 
@@ -40,59 +50,80 @@ file-by-file audit and the ordered re-work sequence this roadmap follows.
 
 ## Two work streams
 
-1. FORMAT RE-WORK (the breaking multi-file change). Not started. Library-first,
-   per the ordered sequence below. Belongs in its own worktree/branch.
-2. VIEWERS + EXPORT (`feature/csv-viewer` branch). Active and nearly current:
-   content-aware viewers (text/code/markdown/html/csv/richtext) and real export
-   backends (csv/docx/html/json/markdown/pdf). Built on the OLD single-file
-   library, so it inherits the index-flip + multi-file obligations when it lands.
-
-Recommended merge order: land `feature/csv-viewer` first, then start the format
-re-work in a fresh worktree off the updated main, so the re-work updates one
-combined viewer+export+library tree to the new format rather than two branches
-racing to change the same files.
+1. FORMAT RE-WORK (the breaking multi-file change). DONE on `main`. Library-first
+   per the sequence below; all steps complete. Delivered across multiple worktrees
+   merged to main (f<N> ids, index flip, container reader/writer, re-base/condense,
+   diff + mutate API, convert, i18n, regenerated examples, both CLIs, CLI glob
+   self-expansion).
+2. VIEWERS + EXPORT. The content viewers (text/code/markdown/html/csv/richtext)
+   and export backends (csv/docx/html/json/markdown/pdf) are WALKER-side per the
+   export-is-Walker-only decision; they operate on reconstructed bytes and
+   re-point to the new per-file reconstruct API. This lives on the walker
+   branches and lands with the walker migration (separate stream).
 
 ## Format re-work sequence (library-first; TDD; keep walrus-fmt GUI-free)
 
-Each step leaves the workspace buildable. Write failing tests first for the pure
-logic (reconstruct, version addressing, re-base, diff, player). Scoped
-`-p <crate>` checks during development; the full gate is the owner's manual step.
+ALL STEPS 1-8 DONE on `main` for walrus-core. Step 9 (walker frontend) is the
+outstanding separate-stream item. Step 10 (docs) is ongoing -- this ROADMAP
+update is part of it. Each step left the workspace buildable; development used
+scoped `-p <crate>` checks with the full gate as the owner's manual step.
 
-1. Spec-anchored types: reshape `manifest.rs` (top-level single-doc fields ->
+1. DONE -- Spec-anchored types: reshape `manifest.rs` (top-level single-doc fields ->
    per-file `files[]` entries with id/attributes/generations), add the
    `.wchg` header type + `Direction` enum; fix `base_index` semantics per variant.
-2. Container READER for the per-file layout (`files/<id>/base`,
+2. DONE -- Container READER for the per-file layout (`files/<id>/base`,
    `files/<id>/<name>.wchg` with its header line); reshape `WalrusFile`/`Archive`
    to the per-file collection.
-3. INDEX FLIP in reconstruct + version addressing: `Index(0) == current` for both
-   variants; assert byte-identical output across variants (strict TDD).
-4. Container WRITER for the per-file layout + `.wchg` header + transactional
-   temp-file-then-rename writes.
-5. RE-BASE primitive, then `condense(keep)` and the automatic generations trim
-   sharing it.
-6. DIFF (`similar` + adapter, adaptive granularity, grapheme-aware) + the mutate
-   API (add/update/remove/set-generations) + `.wal <-> .wbl` convert +
+3. DONE -- INDEX FLIP in reconstruct + version addressing: `Index(0) == current`
+   for both variants; byte-identical output across variants asserted (strict TDD;
+   plus the ~300-version Rust deep-history test and ~50-version Python one).
+4. DONE -- Container WRITER for the per-file layout + `.wchg` header +
+   transactional temp-file-then-rename writes. (Also: short `f<N>` member ids so
+   deep/long relative paths stay ustar-legal -- the long-path crash fix.)
+5. DONE -- RE-BASE primitive, then `condense(keep)` and the automatic generations
+   trim sharing it.
+6. DONE -- DIFF (`similar` + adapter, adaptive granularity, grapheme-aware) + the
+   mutate API (add/update/remove/set-generations) + `.wal <-> .wbl` convert +
    `encoding_rs` transcoding. All mutations transactional.
-7. Regenerate examples + fixtures (`generate_*.rs`, `examples/*.wal`); re-establish
-   the forward-then-backward byte-identical integration test.
-8. CLI: re-scope `walx` to extract-only (extract + cat, multi-file + mask, RC
-   table); create the new `walrus` binary (query/add/update/remove/condense/
+7. DONE -- Regenerated examples + fixtures (`generate_*.rs`, `examples/*.wal`);
+   forward-then-backward byte-identical integration test re-established.
+8. DONE -- CLI: `walx` re-scoped to extract-only (extract + cat, multi-file +
+   mask, RC table); new `walrus` binary (query/add/update/remove/condense/
    convert) with POSIX/GNU conventions. `add`/`update` take `-R`/`--recurse`
    (CLI-DESIGN 5.4b, requirements FR-W11 AC7): a CLI-layer walk that expands each
    directory argument into the file batch, storing each file under its path
    relative to the recursion root (root name included) as the archive `name`.
    This reuses the existing `Archive::add`/`update` mutate API (step 6) -- no new
    library primitive -- so a recursed add + `walx extract` round-trips the tree.
-9. WALKER full frontend: two-pane navigator, per-file player binding, import=
-   add/update, remove/condense/set-generations, bloat indicator, and the `.wchg`
-   history viewer (Markdown report export). Headless `egui_kittest` tests.
-10. Docs: keep README.md / crate READMEs aligned with the shipped reality.
-    (FORMAT.md / CLI-DESIGN.md are the source of truth.)
+9. OUTSTANDING (separate walker stream) -- WALKER full frontend: migrate off the
+   legacy `WalrusFile::open` to the `Archive` API (clears the known-red
+   `MissingMember("base")` integration test), then two-pane navigator, per-file
+   player binding, import=add/update, remove/condense/set-generations, bloat
+   indicator, and the `.wchg` history viewer (Markdown report export). Headless
+   `egui_kittest` tests. In-flight on walker branches (FR-K6 controls done;
+   FR-K11 Automerge + a git-source history source in progress).
+10. ONGOING -- Docs: keep README.md / crate READMEs aligned with the shipped
+    reality. (FORMAT.md / CLI-DESIGN.md are the source of truth.) This ROADMAP
+    status refresh is part of step 10.
 
-## Previously "done" -- now obsolete or needs re-work (OLD single-file format)
+## Walrus-core follow-ups still open (small)
 
-These compiled and were unit-tested against the OLD single-file format. They are
-NOT a working base for the new format and are superseded by the sequence above:
+- Test-base `.wal` fixture: snapshot the real git history of the top-level `.md`
+  files into a committed fixture, replay into a multi-file archive stamped with
+  real commit dates, and assert `extract --at <date>` returns the exact
+  historical state. (The synthetic deep-history test had to skip mid-history
+  `--at` because it could not pin per-version timestamps; this fixes that gap.)
+- `walrus --version` flag (the acceptance TCR records the CLI has none; binary
+  identity currently falls back to the git short-sha).
+- Pre-existing clippy `manual_str_repeat` lint at `crates/walrus/src/archive.rs`
+  (surfaces under `cargo clippy --all-targets`).
+
+## HISTORICAL -- the OLD single-file format work that was re-worked (now superseded)
+
+This section is kept for context only. The items below were the OLD single-file
+implementation; they have ALL been re-worked into the multi-file format per the
+now-complete sequence above. walrus-core no longer uses any of this; `walker` is
+the one place still on the legacy `WalrusFile::open` (step 9, separate stream):
 
 - `walrus-fmt` single-document model (`WalrusFile { base, log }`), the single-doc
   manifest (top-level `document`/`versions`/`checkpoints`), the fixed tar members
