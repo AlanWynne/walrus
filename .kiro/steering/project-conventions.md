@@ -68,6 +68,36 @@ state accurate for the next session. The natural next unlock is the container
 WRITER (item 1): most other TODOs -- the demo fixture, `.wal <-> .wbl`
 conversion, save support -- depend on it.
 
+## Branch hygiene -- REBASE ONTO LATEST main BEFORE STARTING DEVELOPMENT
+
+Work happens on many parallel streams/worktrees (walrus-core, walker, planning
+branches). Before you START implementing on any feature or planning branch --
+and again before you merge it -- REBASE the branch onto the latest `main`:
+
+```sh
+git fetch origin
+git rebase origin/main        # from the branch's worktree
+```
+
+Why this is mandatory:
+- A branch cut from an older `main` carries a STALE tree. Its diff against
+  current `main` shows PHANTOM deletions of files that landed on `main` after
+  the branch was cut (e.g. a planning branch once appeared to delete
+  `input_glob.rs`, the deep-history/at-timeline/glob tests, etc. -- purely
+  because it predated them). Merging such a branch without rebasing first can
+  REVERT other streams' merged work.
+- Rebasing replays only the branch's OWN commits on top of current `main`, so
+  the result is "latest main PLUS this branch's additions", with no accidental
+  reversions. Resolve any conflicts in shared files (FORMAT.md, CLI-DESIGN.md,
+  ROADMAP.md) by keeping main's content and layering the branch's change on top.
+- After rebasing, VERIFY: `git diff --stat main <branch>` must show ONLY the
+  files the branch legitimately changes -- no surprise deletions of main's work.
+
+If the branch has already been pushed and is shared with another stream, do NOT
+force-push the rebased history without coordinating -- a rebase rewrites commit
+ids and will disrupt anyone else who has the old branch. Rebase locally, verify,
+and agree on publishing with the branch's owner.
+
 ## Relationship to FileForgeWorkbench (FFWB)
 
 Walrus is a standalone project. FFWB is one consumer: when it adds `.wal`/`.wbl`
