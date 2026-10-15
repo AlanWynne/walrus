@@ -20,6 +20,8 @@ use anyhow::Result;
 use wal_cli_common::cat::{self, CatArgs};
 use wal_cli_common::error::CliError;
 use wal_cli_common::extract::{self, ExtractArgs};
+use wal_cli_common::search::{self, SearchArgs};
+use wal_cli_common::search_render::OutputFormat;
 use wal_cli_common::selector::{self, Selector};
 
 fn main() -> ExitCode {
@@ -56,6 +58,10 @@ fn run() -> Result<u8> {
             let parsed = parse_cat(&argv[1..])?;
             Ok(cat::run(&parsed)?)
         }
+        "search" => {
+            let parsed = parse_search(&argv[1..])?;
+            Ok(search::run(&parsed)?)
+        }
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(0)
@@ -74,19 +80,26 @@ struct Scan {
     output: Option<String>,
     force: bool,
     sanitize: bool,
+    case_insensitive: bool,
+    regex: bool,
+    format: OutputFormat,
 }
 
-/// Parse the shared option grammar for both subcommands: positionals, the
-/// mutually-exclusive version selector, and the extract-only `-o`/`--force`/
-/// `--sanitize` flags. `allow_disk` enables the disk-targeting flags (extract
-/// only); `cat` rejects them as unknown options.
-fn scan(tokens: &[String], allow_disk: bool) -> Result<Scan, CliError> {
+/// Parse the shared option grammar: positionals, the mutually-exclusive version
+/// selector, and the per-subcommand flags. `allow_disk` enables the extract-only
+/// `-o`/`--force`/`--sanitize` flags; `allow_search` enables the search-only
+/// `-i`/`--ignore-case`/`--regex`/`--format` flags. A flag not enabled for the
+/// current subcommand is rejected as an unknown option.
+fn scan(tokens: &[String], allow_disk: bool, allow_search: bool) -> Result<Scan, CliError> {
     let mut scan = Scan {
         positionals: Vec::new(),
         selector: None,
         output: None,
         force: false,
         sanitize: false,
+        case_insensitive: false,
+        regex: false,
+        format: OutputFormat::Markdown,
     };
     let mut options_done = false;
     let mut iter = tokens.iter().enumerate().peekable();
@@ -130,6 +143,12 @@ fn scan(tokens: &[String], allow_disk: bool) -> Result<Scan, CliError> {
             }
             "--force" if allow_disk => scan.force = true,
             "--sanitize" if allow_disk => scan.sanitize = true,
+            "-i" | "--ignore-case" if allow_search => scan.case_insensitive = true,
+            "--regex" if allow_search => scan.regex = true,
+            "--format" if allow_search => {
+                let value = take_value(name, inline, &mut iter)?;
+                scan.format = parse_format(&value)?;
+            }
             other => {
                 return Err(CliError::usage(format!("unknown option '{other}'")));
             }
@@ -168,7 +187,7 @@ where
 
 /// Build [`ExtractArgs`] from the raw `extract` tokens.
 fn parse_extract(tokens: &[String]) -> Result<ExtractArgs, CliError> {
-    let scan = scan(tokens, true)?;
+    let scan = scan(tokens, true, false)?;
     let mut positionals = scan.positionals.into_iter();
     let archive = positionals
         .next()
@@ -191,7 +210,7 @@ fn parse_extract(tokens: &[String]) -> Result<ExtractArgs, CliError> {
 
 /// Build [`CatArgs`] from the raw `cat` tokens.
 fn parse_cat(tokens: &[String]) -> Result<CatArgs, CliError> {
-    let scan = scan(tokens, false)?;
+    let scan = scan(tokens, false, false)?;
     let mut positionals = scan.positionals.into_iter();
     let archive = positionals
         .next()
@@ -209,13 +228,53 @@ fn parse_cat(tokens: &[String]) -> Result<CatArgs, CliError> {
     })
 }
 
+/// Build [`SearchArgs`] from the raw `search` tokens:
+/// `search <archive> <string> [file-mask] [selector] [-i] [--regex] [--format]`.
+fn parse_search(tokens: &[String]) -> Result<SearchArgs, CliError> {
+    let scan = scan(tokens, false, true)?;
+    let mut positionals = scan.positionals.into_iter();
+    let archive = positionals.next().ok_or_else(|| {
+        CliError::usage("usage: walx search <archive> <string> [file-mask] [selector]")
+    })?;
+    let needle = positionals.next().ok_or_else(|| {
+        CliError::usage("usage: walx search <archive> <string> [file-mask] [selector]")
+    })?;
+    let mask = positionals.next();
+    if positionals.next().is_some() {
+        return Err(CliError::usage(
+            "search takes at most <archive> <string> and one file-mask",
+        ));
+    }
+    Ok(SearchArgs {
+        archive: PathBuf::from(archive),
+        needle,
+        mask,
+        selector: selector::effective_selector(scan.selector),
+        case_insensitive: scan.case_insensitive,
+        regex: scan.regex,
+        format: scan.format,
+    })
+}
+
+/// Parse a `--format` value into an [`OutputFormat`]; anything else is RC 2.
+fn parse_format(value: &str) -> Result<OutputFormat, CliError> {
+    match value {
+        "markdown" => Ok(OutputFormat::Markdown),
+        "plain" => Ok(OutputFormat::Plain),
+        other => Err(CliError::usage(format!(
+            "invalid --format value '{other}' (expected markdown or plain)"
+        ))),
+    }
+}
+
 /// Print the usage banner to stderr.
 fn print_usage() {
     eprintln!(
         "walx -- extract-only CLI for .wal / .wbl archives\n\n\
          USAGE:\n\
          \x20 walx extract <archive> [file-mask] [selector] [-o <dir>] [--force] [--sanitize]\n\
-         \x20 walx cat     <archive> <file>      [selector]\n\n\
+         \x20 walx cat     <archive> <file>      [selector]\n\
+         \x20 walx search  <archive> <string> [file-mask] [selector] [-i] [--regex] [--format <markdown|plain>]\n\n\
          SELECTOR (at most one):\n\
          \x20 --index <n> | --version <current|original|+/-n> | --at <YYYY-MM-DDThh:mm:ssZ>\n"
     );

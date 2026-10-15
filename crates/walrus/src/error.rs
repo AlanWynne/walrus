@@ -171,6 +171,13 @@ pub enum WalrusError {
         reason: String,
     },
 
+    /// A `--regex` search pattern was empty or failed to compile. Only reachable
+    /// under the `search-regex` feature; literal and case-insensitive search
+    /// never produce this.
+    #[cfg(feature = "search-regex")]
+    #[error("invalid search pattern: {0}")]
+    SearchPattern(String),
+
     /// An export backend failed to produce output.
     #[error("export failed ({backend}): {reason}")]
     Export {

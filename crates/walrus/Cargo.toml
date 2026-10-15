@@ -46,6 +46,15 @@ similar = { version = "2.7", optional = true, default-features = false, features
 # a playback-only embedder stays lean (dependency boundary, invariant 2).
 encoding_rs = { version = "0.8", optional = true }
 
+# Optional regex engine for the `--regex` search mode. Behind the `search-regex`
+# feature so a playback-only embedder stays lean (dependency boundary,
+# invariant 2), mirroring the `diff`/`i18n` opt-in pattern: `regex` is pure Rust
+# with no GUI/app/ff-* dependency, so it does not breach the boundary, but it is
+# opt-in so the default build links neither `regex` nor the regex search arm and
+# `cargo tree` stays auditable. Minimal feature set: `std` + `unicode`; we do
+# NOT pull the perf/transitive extras `default-features` would add.
+regex = { version = "1", optional = true, default-features = false, features = ["std", "unicode"] }
+
 [dev-dependencies]
 # For the example generators only; not part of the library's dependency graph.
 anyhow = { workspace = true }
@@ -69,3 +78,7 @@ diff = ["dep:similar"]
 # The i18n encoding path (FR-W8) is opt-in; it pulls `encoding_rs` only when
 # enabled. The default build links neither `similar` nor `encoding_rs`.
 i18n = ["dep:encoding_rs"]
+# The regex search mode (`--regex`) is opt-in; it pulls `regex` only when
+# enabled. The default build links neither `regex` nor the regex search arm, so
+# literal + case-insensitive search stays dependency-free (invariant 2).
+search-regex = ["dep:regex"]

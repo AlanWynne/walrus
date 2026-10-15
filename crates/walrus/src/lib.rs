@@ -35,6 +35,7 @@ mod mutate_stamp;
 mod rebase;
 mod reconstruct;
 mod record;
+mod search;
 mod standalone;
 mod timestamp;
 mod version;
@@ -51,5 +52,6 @@ pub use manifest::{
     Checkpoint, FileAttributes, Manifest, RebaseInfo, TrackedFile, Variant, Versions,
 };
 pub use record::{ChangeRecord, Op};
+pub use search::{search_version, search_versions, Match, MatchMode, SearchOptions};
 pub use version::Version;
 pub use wchg::{Direction, WchgHeader};

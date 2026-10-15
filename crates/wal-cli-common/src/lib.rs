@@ -18,4 +18,6 @@ pub mod input_glob;
 pub mod mask;
 pub mod names;
 pub mod safety;
+pub mod search;
+pub mod search_render;
 pub mod selector;

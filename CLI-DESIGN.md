@@ -1090,16 +1090,88 @@ walrus convert <archive> [file-mask] --to <wal|wbl> [-o <name>]
 - No-match mask -> RC 8 (target does not exist), consistent with the other
   mask-driven commands.
 
+### 5.8 Search (find a string) -- DECIDED
+
+```
+walrus search <archive> <string> [file-mask] [selector] [-i|--ignore-case] [--regex] [--format <markdown|plain>]
+walx   search <archive> <string> [file-mask] [selector] [-i|--ignore-case] [--regex] [--format <markdown|plain>]
+```
+
+Search is READ-ONLY, so it is offered IDENTICALLY by both the full `walrus` tool
+and the extract-only `walx` tool (same shared engine, same behaviour). It
+reconstructs each selected file at the chosen version and reports every
+occurrence of `<string>`.
+
+- `<string>` is the needle: a literal substring by default, or a regular
+  expression when `--regex` is given.
+- `file-mask` optional: omitted -> ALL tracked files; a wildcard/name selects a
+  subset (the same segment-aware `/`-glob masking as `extract`). A mask matching
+  NO file is a successful search with zero matches (RC 1), not RC 8.
+- VERSION SELECTOR: the SAME selector set as `extract`/`cat` (section 5.2.1) --
+  `--index <n>`, `--version <current|original|+/-n>`, and `--at <T>`; resolved
+  PER FILE against that file's own `[0, count]` range; omitted -> current (index
+  0). At most ONE selector may be given (two is RC 2). `--label` is deferred, as
+  in extract/cat. A beyond-last NUMERIC `--index` clamps to the file's original
+  version with a warning on stderr and exits RC 4 (the clamp dominates the
+  found/no-match result), reusing the extract clamp-and-warn contract.
+- `-i` / `--ignore-case`: fold case when matching (literal and regex alike).
+- `--regex`: treat `<string>` as a regular expression. This activates the
+  `walrus-fmt` `search-regex` cargo feature, which the CLI binaries enable; an
+  invalid pattern is a usage error. The default (no `--regex`) is a literal
+  search and links no regex engine in a playback-only embedder (invariant 2).
+- `--format`: `markdown` (DEFAULT) or `plain`. stdout carries the report;
+  diagnostics and the clamp warning go to stderr.
+
+OUTPUT (Markdown report, the default). A header carries:
+- the archive name/path,
+- the version INDEX searched, and
+- that version's CHANGE TIMESTAMP (the `ts` of the record that produced the
+  searched version; the ORIGINAL base version has none, shown as `-`).
+
+Then, per tracked file that has a match, a table:
+
+```
+| Line | Col | Byte offset | Match |
+| ---- | --- | ----------- | ----- |
+| 3    | 1   | 10          | walrus |
+```
+
+Line is 1-based (counting LF bytes); Col is 1-based in Unicode scalar values
+(not bytes); Byte offset is the authoritative 0-based locator. The report ends
+with a `match(es) in file(s)` summary count. `--format plain` emits one
+`file:line:col:offset:match` line per hit plus a summary line, with no Markdown
+table syntax, for piping.
+
+ALL-VERSIONS SEARCH (DESIGNED-FOR, DEFERRED). The report data model is
+version-agnostic: every per-match fact -- including its version index and that
+version's timestamp -- rides on the individual match, never a single
+report-level scalar. A future all-versions search (e.g. collapse to an index
+RANGE "versions 55-36", or expand per-version with each version's timestamp)
+therefore composes WITHOUT a redesign; the `walrus-fmt` `search_versions` range
+primitive is the composition seam and is NOT yet wired to the CLI. Only
+single-version search ships now.
+
+- RETURN CODES: matches found -> RC 0; a valid search with zero matches -> RC 1
+  (grep convention); usage error (two selectors, unknown option, `--regex` with
+  an invalid pattern, bad `--at`/`--format`) -> RC 2; beyond-last numeric
+  `--index` clamp -> RC 4 (dominates the found/no-match result).
+
 ---
 
 ## 6. Return codes
 
 | Code | Meaning |
 |------|---------|
-| 0    | Success (includes a no-change add/update no-op, section 5.4) |
+| 0    | Success (includes a no-change add/update no-op, section 5.4; and `search` finding at least one match) |
+| 1    | `search` only: a valid search that found NO matches (grep convention, section 5.8) |
 | 2    | Usage error (unknown option, mutually exclusive operations, bad args, an add/update file-input pattern matching no files per section 5.4f) |
-| 4    | Extract index beyond the last recorded change; original returned with a warning |
+| 4    | Extract / cat / search index beyond the last recorded change; original returned with a warning |
 | 8    | Target file does not exist in the archive (update / remove / condense / convert) |
+
+RC 1 is search-specific: it is otherwise the general-failure code, so `search`
+returns it deliberately for the "nothing found" outcome (never as an error) and
+the contract is stated explicitly here. For `search`, a beyond-last numeric
+`--index` clamp (RC 4) dominates both the found (0) and no-match (1) results.
 
 DECIDED: RC 2 for usage errors (standard GNU convention), including the
 multi-match remove-without-`--force` case.

@@ -27,6 +27,7 @@ mod cmd_convert;
 mod cmd_extract;
 mod cmd_query;
 mod cmd_remove;
+mod cmd_search;
 mod cmd_update;
 mod common;
 mod dispatch;

@@ -13,7 +13,7 @@ use wal_cli_common::error::CliError;
 
 use crate::{
     cmd_add, cmd_alias, cmd_cat, cmd_condense, cmd_convert, cmd_extract, cmd_query, cmd_remove,
-    cmd_update,
+    cmd_search, cmd_update,
 };
 
 /// The operations this binary dispatches: the eight content commands plus the
@@ -23,6 +23,7 @@ pub enum Op {
     Query,
     Extract,
     Cat,
+    Search,
     Add,
     Update,
     Remove,
@@ -61,6 +62,7 @@ pub fn run_with(argv: &[String]) -> Result<u8> {
         Op::Query => cmd_query::run(&rest),
         Op::Extract => cmd_extract::run(&rest),
         Op::Cat => cmd_cat::run(&rest),
+        Op::Search => cmd_search::run(&rest),
         Op::Add => cmd_add::run(&rest),
         Op::Update => cmd_update::run(&rest),
         Op::Remove => cmd_remove::run(&rest),
@@ -165,6 +167,7 @@ fn canonical_op(token: &str) -> Option<Op> {
         "query" => Some(Op::Query),
         "extract" => Some(Op::Extract),
         "cat" => Some(Op::Cat),
+        "search" => Some(Op::Search),
         "add" => Some(Op::Add),
         "update" => Some(Op::Update),
         "remove" => Some(Op::Remove),
@@ -195,6 +198,7 @@ pub fn print_usage() {
          \x20 walrus query    <archive> [file-mask] [-l]\n\
          \x20 walrus extract  <archive> [file-mask] [selector] [-o <dir>] [--force] [--sanitize]\n\
          \x20 walrus cat      <archive> <file>      [selector]\n\
+         \x20 walrus search   <archive> <string> [file-mask] [selector] [-i] [--regex] [--format <markdown|plain>]\n\
          \x20 walrus add      <archive> <files...>  [--generations <n>] [--wal|--wbl|--direction <d>] [-R]\n\
          \x20 walrus update   <archive> <files...>  [--generations <n>] [-R]\n\
          \x20 walrus remove   <archive> <file-mask> [--force]\n\

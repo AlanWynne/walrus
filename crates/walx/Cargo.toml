@@ -16,8 +16,8 @@ name = "walx"
 path = "src/main.rs"
 
 [dependencies]
-walrus-fmt = { workspace = true }
-wal-cli-common = { path = "../wal-cli-common" }
+walrus-fmt = { workspace = true, features = ["search-regex"] }
+wal-cli-common = { path = "../wal-cli-common", features = ["search-regex"] }
 anyhow = { workspace = true }
 
 [dev-dependencies]
