@@ -10,7 +10,7 @@
 //! `to_pdf`, `to_docx`) are each behind an opt-in cargo feature so the
 //! embeddable library stays lean (project-conventions invariant 2). The
 //! functions take the already-reconstructed document bytes from
-//! [`crate::WalrusFile::reconstruct`].
+//! [`crate::Archive::reconstruct`].
 
 // === Always-compiled modules ========================================
 mod original;

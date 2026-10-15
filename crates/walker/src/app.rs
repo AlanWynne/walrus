@@ -28,9 +28,9 @@ use crate::view::{self, Renderer};
 
 /// Which backend the open read source is, for the status-bar variant label.
 ///
-/// The player no longer owns a `WalrusFile`, so the variant (`wal`/`wbl`) can no
-/// longer be read from it. The app tracks this tag alongside the boxed read
-/// source instead. Automerge has no `.wal`/`.wbl` variant, so it is its own arm.
+/// The player holds only a position, not the opened archive, so the variant
+/// (`wal`/`wbl`) is tracked here alongside the boxed read source. Automerge has
+/// no `.wal`/`.wbl` variant, so it is its own arm.
 enum SourceKind {
     /// A `.wal`/`.wbl` archive, carrying its forward/reverse variant.
     Walrus(Variant),
@@ -348,8 +348,8 @@ impl WalkerApp {
     /// Build the export context for the chrome menu, if a file is loaded.
     ///
     /// The document name/mime come from the ACTIVE SOURCE via `content_hint`
-    /// (the player no longer owns a `WalrusFile`), so export works identically
-    /// for both backends.
+    /// (the player holds only a position), so export works identically for both
+    /// backends.
     fn export_context(&self) -> Option<(Vec<walrus_fmt::export::ExportFormat>, String, String)> {
         let source = self.source()?;
         let active = self.navigator.active()?;
@@ -449,8 +449,8 @@ impl eframe::App for WalkerApp {
                 // the player's current index via `view::render`, so selection
                 // binds the viewer to that file's version timeline (AC2). A live
                 // per-file `Player` rebind is deferred app-shell wiring: `Player`
-                // owns a `WalrusFile` the seam does not expose, so FR-K4 binds
-                // through the trait (model-level AC2, proven headlessly).
+                // holds position-only state the seam does not expose, so FR-K4
+                // binds through the trait (model-level AC2, proven headlessly).
                 if let Some(source) = self.source() {
                     self.renderer = navigator_renderer(source, &self.navigator);
                 }
@@ -463,8 +463,8 @@ impl eframe::App for WalkerApp {
         self.show_history_panel(ui);
 
         // Bottom status bar. The file name, mime, and structured note come from
-        // the ACTIVE SOURCE through the trait (the player no longer owns a
-        // `WalrusFile`); the index/total come from the position-only player.
+        // the ACTIVE SOURCE through the trait (the player holds only a
+        // position); the index/total come from the position-only player.
         let variant = self.variant_str();
         let renderer_label = renderer_label(&self.renderer);
         let status = self.status.clone();

@@ -247,22 +247,10 @@ impl Manifest {
         }
     }
 
-    /// Build a single-file `.wal` manifest with `count` forward records.
-    ///
-    /// Compatibility shim for the current single-document [`crate::WalrusFile`]
-    /// model: it seeds one forward tracked file so the derive-from-log-length
-    /// callers keep working until the multi-file `Archive` reshape lands.
-    pub fn new_wal(count: usize) -> Self {
-        let mut manifest = Self::new(Variant::Wal);
-        manifest
-            .files
-            .push(TrackedFile::new("f0", "document", Variant::Wal, count));
-        manifest
-    }
-
     /// The checkpoints of the first tracked file, or an empty slice when the
-    /// archive has no files. Compatibility accessor for the single-document
-    /// model; checkpoints are a per-file property on [`TrackedFile`].
+    /// archive has no files. Checkpoints are a per-file property on
+    /// [`TrackedFile`]; this is a convenience accessor for a single-file
+    /// archive.
     pub fn checkpoints(&self) -> &[Checkpoint] {
         self.files
             .first()

@@ -7,12 +7,20 @@
 //! (`to_bytes` + `read`) and re-checks every index for byte-identity across the
 //! container boundary.
 //!
-//! The single-document `WalrusFile::reconstruct(Version::Index(i))` keeps the
-//! OLD index convention: index 0 is the stored base (version 0) and index
-//! `len()` is the fully-replayed far end. The expected bytes are computed in
-//! that same forward order, so index `i` corresponds to `expected[i]`.
+//! This exercises the live `Archive` engine. `Archive` uses the direction-aware
+//! convention (FORMAT.md section 5): index 0 is the CURRENT version and the
+//! file's splice `count` is the ORIGINAL. The history is replayed FORWARD as a
+//! sequence of saves (`add` then one `update_with_splices` per record), so the
+//! stored base is the original and each save moves the new current to index 0.
+//!
+//! The expected bytes are computed in forward order, where `expected[i]` is the
+//! base with the first `i` records applied. The mapping onto the Archive index
+//! space is therefore: Archive index `j` <-> `expected[VERSION_COUNT - j]`
+//! (index 0 = final current = `expected[VERSION_COUNT]`, index `VERSION_COUNT` =
+//! original = `expected[0]`). The assertion messages name the forward-order
+//! `expected` subscript alongside `j` to make a mismatch easy to localise.
 
-use walrus_fmt::{ChangeRecord, Version, WalrusFile};
+use walrus_fmt::{Archive, ChangeRecord, Direction, FileId, Manifest, Variant, Version};
 
 /// Number of change records (versions beyond the base) to build.
 const VERSION_COUNT: usize = 300;
@@ -69,24 +77,52 @@ fn build_history() -> (Vec<u8>, Vec<ChangeRecord>, Vec<Vec<u8>>) {
     (base, log, expected)
 }
 
+/// Build the equivalent archive through the public mutate API: seed the
+/// ORIGINAL as a forward file's first version, then replay each forward splice
+/// as a save. A forward save APPENDS the net splice and moves the new current to
+/// index 0, so after all saves the file holds `VERSION_COUNT` splices with the
+/// final current at index 0 and the original at index `VERSION_COUNT`.
+fn build_archive(base: &[u8], log: &[ChangeRecord]) -> Archive {
+    let mut archive = Archive::new(Manifest::new(Variant::Wal));
+    archive
+        .add("document", base, None, Some(Direction::Forward))
+        .expect("seed the original as the file's first version");
+    for record in log {
+        archive
+            .update_with_splices("document", std::slice::from_ref(record))
+            .expect("apply one forward splice as a save");
+    }
+    archive
+}
+
 #[test]
 fn reconstruct_at_every_index_of_a_deep_history_matches_expected_bytes() {
     let (base, log, expected) = build_history();
-    let file = WalrusFile::new_wal(base, log).expect("new_wal builds a valid manifest");
+    let archive = build_archive(&base, &log);
 
+    let count = archive
+        .file("document")
+        .expect("the tracked file exists")
+        .versions
+        .count;
     assert_eq!(
-        file.len(),
-        VERSION_COUNT,
-        "log length must equal the version count"
+        count, VERSION_COUNT,
+        "every forward save appends a net splice, so count must equal the version count"
     );
-    // expected has one entry per index in 0..=len, so enumerate covers them all.
-    for (index, want) in expected.iter().enumerate() {
-        let got = file
-            .reconstruct(Version::Index(index))
+
+    // Archive index j corresponds to expected[VERSION_COUNT - j]: index 0 is the
+    // final current and index VERSION_COUNT is the original.
+    let id = FileId::from("f0");
+    for j in 0..=VERSION_COUNT {
+        let want = &expected[VERSION_COUNT - j];
+        let got = archive
+            .reconstruct(&id, Version::Index(j))
             .expect("reconstruct must succeed for an in-range index");
         assert_eq!(
-            &got, want,
-            "version {index} reconstructs to the wrong bytes"
+            &got,
+            want,
+            "archive index {j} (expected[{}]) reconstructs to the wrong bytes",
+            VERSION_COUNT - j
         );
     }
 }
@@ -94,24 +130,33 @@ fn reconstruct_at_every_index_of_a_deep_history_matches_expected_bytes() {
 #[test]
 fn deep_history_round_trips_byte_identical_through_the_container_at_every_index() {
     let (base, log, expected) = build_history();
-    let original = WalrusFile::new_wal(base, log).expect("new_wal builds a valid manifest");
+    let original = build_archive(&base, &log);
 
     let bytes = original.to_bytes().expect("serialise to container bytes");
-    let reopened = WalrusFile::read(&bytes).expect("read the container back");
+    let reopened = Archive::read(&bytes).expect("read the container back");
 
+    let count = reopened
+        .file("document")
+        .expect("the tracked file survives the round-trip")
+        .versions
+        .count;
     assert_eq!(
-        reopened.len(),
-        VERSION_COUNT,
+        count, VERSION_COUNT,
         "round-trip must preserve the version count"
     );
-    // expected has one entry per index in 0..=len, so enumerate covers them all.
-    for (index, want) in expected.iter().enumerate() {
+
+    // Same mapping as above, now asserted on the reopened archive.
+    let id = FileId::from("f0");
+    for j in 0..=VERSION_COUNT {
+        let want = &expected[VERSION_COUNT - j];
         let got = reopened
-            .reconstruct(Version::Index(index))
+            .reconstruct(&id, Version::Index(j))
             .expect("reconstruct after round-trip must succeed");
         assert_eq!(
-            &got, want,
-            "version {index} differs after a write/read round-trip"
+            &got,
+            want,
+            "archive index {j} (expected[{}]) differs after a write/read round-trip",
+            VERSION_COUNT - j
         );
     }
 }

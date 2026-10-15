@@ -4,24 +4,6 @@ use crate::record::{ChangeRecord, Op};
 use crate::wchg::Direction;
 use crate::{Result, WalrusError};
 
-/// Rebuild the document at `target_index` by applying the first `target_index`
-/// splice records to `base`, in order (the OLD single-document, forward-only
-/// convention where index 0 is the stored base and `len` is the far end). The
-/// compatibility [`crate::WalrusFile`] path keeps this convention; the new
-/// per-file, direction-aware engine is [`reconstruct_directional`].
-///
-/// Checkpoint records are skipped (they carry integrity hashes, not mutations).
-/// The caller has already validated that `target_index <= number of records`.
-pub(crate) fn reconstruct(
-    base: &[u8],
-    log: &[ChangeRecord],
-    target_index: usize,
-) -> Result<Vec<u8>> {
-    // The old forward-only "apply first `target_index`" shares the apply loop
-    // with the directional engine; only the index convention differs.
-    apply_first_splices(base, log, target_index)
-}
-
 /// Reconstruct a version directionally: apply the first `splices_to_apply`
 /// SPLICE records of `log` to `base`, in order, where the count depends on the
 /// file's own `direction` and the resolved canonical `index` (0 = current,
@@ -121,9 +103,9 @@ mod tests {
             ChangeRecord::splice(1, 0, "b"),
             ChangeRecord::splice(2, 0, "c"),
         ];
-        assert_eq!(reconstruct(&base, &log, 0).unwrap(), b"a");
-        assert_eq!(reconstruct(&base, &log, 1).unwrap(), b"ab");
-        assert_eq!(reconstruct(&base, &log, 2).unwrap(), b"abc");
+        assert_eq!(apply_first_splices(&base, &log, 0).unwrap(), b"a");
+        assert_eq!(apply_first_splices(&base, &log, 1).unwrap(), b"ab");
+        assert_eq!(apply_first_splices(&base, &log, 2).unwrap(), b"abc");
     }
 
     #[test]
@@ -131,14 +113,14 @@ mod tests {
         // "walrus" -> at 0 delete 6 insert "seal" -> "seal"
         let base = b"walrus".to_vec();
         let log = vec![ChangeRecord::splice(0, 6, "seal")];
-        assert_eq!(reconstruct(&base, &log, 1).unwrap(), b"seal");
+        assert_eq!(apply_first_splices(&base, &log, 1).unwrap(), b"seal");
     }
 
     #[test]
     fn out_of_bounds_is_rejected() {
         let base = b"hi".to_vec();
         let log = vec![ChangeRecord::splice(5, 0, "x")];
-        assert!(reconstruct(&base, &log, 1).is_err());
+        assert!(apply_first_splices(&base, &log, 1).is_err());
     }
 
     // === reconstruct_directional (per-file, direction-aware) ============

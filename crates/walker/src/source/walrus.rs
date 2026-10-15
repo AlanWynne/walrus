@@ -78,7 +78,7 @@ impl WalrusSource {
     /// The app-shell status bar needs the variant tag, but the shell may not
     /// name `walrus_fmt` archive types directly (FR-K1 AC2); it reads the
     /// variant through this accessor on the already-open source instead of
-    /// re-opening the file with the legacy single-file reader.
+    /// re-opening the file.
     pub fn variant(&self) -> Variant {
         self.archive.manifest().variant
     }
@@ -546,8 +546,8 @@ mod tests {
     #[test]
     fn variant_is_readable_from_a_multi_file_archive() {
         // The exact shape that broke the GUI: a MULTI-FILE archive. It opens as
-        // a WalrusSource and reports its variant through variant() without the
-        // legacy WalrusFile::open path that failed with MissingMember("base").
+        // a WalrusSource and reports its variant through variant(), the path that
+        // guards against the earlier missing-base open failure.
         let mut manifest = Manifest::new(Variant::Wal);
         manifest.files.push(TrackedFile::new_with_direction(
             "a0",

@@ -60,40 +60,6 @@ pub(crate) fn write_archive(manifest: &Manifest, files: &[FileParts<'_>]) -> Res
     zstd::stream::encode_all(&tar_bytes[..], ZSTD_LEVEL).map_err(Into::into)
 }
 
-/// Compatibility writer for the single-document [`crate::WalrusFile`] shim.
-///
-/// `WalrusFile` is the pre-multi-file model retained until the examples migrate
-/// to the `Archive` API (FR-W12). Its reader counterpart
-/// `container::read_container` reads the OLD three-fixed-member layout
-/// (`manifest.json`, `base`, `log.jsonl`), so this writer emits exactly that
-/// paired layout to keep the shim's own write-then-read round-trip consistent.
-/// The NEW per-file FR-W4 layout is produced by [`write_archive`] /
-/// [`crate::Archive::write`]; this function is NOT that path.
-///
-/// # Errors
-/// Returns [`crate::WalrusError::Json`] if the manifest or a record fails to
-/// serialise, and [`crate::WalrusError::Io`] on a tar/zstd framing failure.
-pub(crate) fn write_container(
-    manifest: &Manifest,
-    base: &[u8],
-    log: &[ChangeRecord],
-) -> Result<Vec<u8>> {
-    let manifest_json = serde_json::to_vec_pretty(manifest)?;
-    let mut log_jsonl = Vec::new();
-    for record in log {
-        let line = serde_json::to_vec(record)?;
-        log_jsonl.write_all(&line)?;
-        log_jsonl.push(b'\n');
-    }
-
-    let mut builder = tar::Builder::new(Vec::new());
-    append_member(&mut builder, "manifest.json", &manifest_json)?;
-    append_member(&mut builder, "base", base)?;
-    append_member(&mut builder, "log.jsonl", &log_jsonl)?;
-    let tar_bytes = builder.into_inner()?;
-    zstd::stream::encode_all(&tar_bytes[..], ZSTD_LEVEL).map_err(Into::into)
-}
-
 // === tar assembly =======================================================
 
 /// Build the uncompressed ustar archive: `manifest.json` first, then each
