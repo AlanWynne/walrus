@@ -15,13 +15,13 @@ main. The historical gap report at
 audit; the sequence it drove is now complete (see "Format re-work sequence"
 below, all steps DONE).
 
-WALKER (the GUI frontend) is the one dependent piece NOT yet migrated: it still
-opens archives via the legacy single-file `WalrusFile::open` and so fails on the
-new multi-file fixtures (`MissingMember("base")`). Walker lives on its own
-branches (`feature/walker-gui`, `feature/walker-automerge`,
-`docs/walker-git-source`) and is worked in a separate stream. Migrating walker to
-the `Archive` API is the outstanding cross-stream task; walrus-core already
-exposes everything walker needs.
+WALKER (the GUI frontend) is now MIGRATED and merged on `main`. It opens
+archives via the `Archive` / `WalrusSource` API (commit `5726a00`), and the
+legacy single-file `WalrusFile` shim was removed entirely in `58117df`; the old
+`MissingMember("base")` integration failure is gone. Both streams (walrus-core
+and walker) have converged on `main`; a full `cargo gate --build` runs clean.
+The remaining walker work is the open items in the "Audit follow-ups" and
+"Deferred / future ideas" sections below, not a migration.
 
 ## Design decisions locked (see CLI-DESIGN.md)
 
@@ -95,13 +95,16 @@ scoped `-p <crate>` checks with the full gate as the owner's manual step.
    relative to the recursion root (root name included) as the archive `name`.
    This reuses the existing `Archive::add`/`update` mutate API (step 6) -- no new
    library primitive -- so a recursed add + `walx extract` round-trips the tree.
-9. OUTSTANDING (separate walker stream) -- WALKER full frontend: migrate off the
-   legacy `WalrusFile::open` to the `Archive` API (clears the known-red
-   `MissingMember("base")` integration test), then two-pane navigator, per-file
-   player binding, import=add/update, remove/condense/set-generations, bloat
-   indicator, and the `.wchg` history viewer (Markdown report export). Headless
-   `egui_kittest` tests. In-flight on walker branches (FR-K6 controls done;
-   FR-K11 Automerge + a git-source history source in progress).
+9. DONE (merged to `main`) -- WALKER full frontend: migrated to the `Archive` /
+   `WalrusSource` API (the legacy `WalrusFile::open` is gone; `58117df` removed
+   the shim). Two-pane navigator, per-file position player binding,
+   import=add/update, remove/condense/set-generations, bloat indicator, and the
+   `.wchg` history viewer (Markdown report export) are all on main with headless
+   `egui_kittest` tests for the widget-level logic. FR-K11 Automerge is behind a
+   feature. KNOWN COVERAGE GAP (see "Audit follow-ups"): no test drives the real
+   `WalkerApp` shell end to end -- the harness tests mirror app logic in
+   standalone closures rather than running `WalkerApp::update`/`ui`. The
+   git-source history idea is DEFERRED (see "Deferred / future ideas").
 10. ONGOING -- Docs: keep README.md / crate READMEs aligned with the shipped
     reality. (FORMAT.md / CLI-DESIGN.md are the source of truth.) This ROADMAP
     status refresh is part of step 10.
@@ -141,6 +144,44 @@ cross-stream note:
 - Pre-existing clippy `manual_str_repeat` lint at `crates/walrus/src/archive.rs`
   (surfaces under `cargo clippy --all-targets`).
 
+## SEARCH feature -- WIP (on the `walrus-core` worktree, not yet merged)
+
+Search a `.wal` / `.wbl` archive for a string and report WHERE it was found
+(file name/path, version index, byte offset, 1-based line, 1-based column) as a
+Markdown report (default) or plain text, from BOTH `walrus` and `walx`. Full
+plan: `.agents/tasks/walrus-search/plan.md` (carried into main alongside this
+entry). KEEP -- this is real, wanted work-in-progress; do not discard.
+
+Shape (as planned/implemented in the worktree):
+- MATCHER lives in `walrus-fmt` as pure logic over reconstructed bytes
+  (`crates/walrus/src/search.rs`: `search_version` single-version primitive +
+  `search_versions` range stub for the deferred all-versions path). Honors the
+  dependency boundary -- it opens no archives and touches no CLI.
+- REGEX is behind a new OPT-IN `search-regex` cargo feature on `walrus-fmt`
+  (pulls the pure-Rust `regex` crate), mirroring the `diff` / `i18n` /
+  `export-*` feature pattern so the default build and a playback-only embedder
+  stay lean and `cargo tree` stays auditable. Literal + case-insensitive are in
+  the default build; `--regex` without the feature is a typed, documented refusal.
+- CLI engine + renderer in `wal-cli-common` (`search.rs` + `search_render.rs`),
+  wired as a `search` subcommand into both `walx` and `walrus-cli`. Reuses the
+  existing selector / mask / `reconstruct_with_fallback` helpers.
+- RETURN CODES (grep convention): 0 found, 1 no matches, 2 usage, 4 beyond-last
+  numeric-index clamp. The RC-1 "no matches" row is search-specific and is to be
+  documented in CLI-DESIGN section 6.
+- LINE/COLUMN rule: byte offset authoritative; line = 1 + LF count before the
+  match; column = 1-based in Unicode scalar values; CR is an ordinary char.
+- ALL-VERSIONS search is DESIGNED-FOR but DEFERRED: the `search_versions` range
+  primitive and the version-range renderer seam exist, but the CLI wires only
+  single-version search for now.
+
+STATUS: lives on the `feature/walrus-core` worktree as uncommitted/staged work
+(new `search.rs` / `cmd_search.rs` / `search_render.rs` + tests across
+`walrus-fmt`, `wal-cli-common`, `walrus-cli`, `walx`, plus `CLI-DESIGN.md` and
+`ROADMAP.md` edits). NEXT: finish per the plan's TDD item list, run the scoped
+checks, then land it on `main` via a fresh worktree off current `main` (the
+branch tip predates the legacy-removal, so rebase/re-apply onto `main` rather
+than merging the stale branch -- per the "Branch hygiene" rule).
+
 ## Future features -- DESIGNED, not yet started
 
 - OFFICE-CONTAINER (ODF / OOXML): store an office document in a `.wal` by
@@ -154,12 +195,76 @@ cross-stream note:
   `.kiro/steering/project-conventions.md`) and begin with the spec-first
   FORMAT.md change in `format-change-proposal.md`.
 
+## Deferred / future ideas (not scheduled)
+
+- WALKER git-history source: let `walker` "play" a file's history from a GIT
+  repository (ordered blobs, one per commit) through the same player, viewers,
+  and transport it uses for `.wal`/`.wbl`. Feasible as a CONTAINED change now
+  that the player is already source-agnostic: the `HistorySource` trait and the
+  position-only `Player` landed with the multi-file re-work, so the remaining
+  work is a new `git2`-backed `HistorySource` impl plus generalizing the
+  `app.rs` open/sniff touch points -- NOT the player refactor the original note
+  assumed. MUST stay in `walker`; `walrus-fmt` keeps no git dependency
+  (invariant 2). Design note: `.agents/tasks/walker-git-source/design.md`.
+- WALKER multi-format history player (Automerge, later Yrs) behind the same
+  `HistorySource` trait. Design note:
+  `.agents/tasks/history-source-automerge.md`. `automerge` is a Walker-side /
+  feature-gated dependency ONLY; it must not enter `walrus-fmt` (invariant 2).
+
+## Audit follow-ups (from the 2026-10-15 read-only audit)
+
+Full report: `.agents/tasks/walrus-walker-audit.md`. The `58117df` legacy
+removal is clean at the code level (no removed-symbol residue, library builds +
+clippies clean, dependency boundary intact, no library `unwrap`/`panic`, variant
+symmetry asserted). Open items, prioritized:
+
+- [HIGH] No test drives the REAL `WalkerApp` shell (`update`/`ui`, `open_walrus`,
+  `refresh_bytes`, `bind_player`, export/import/mutate wiring). Every walker
+  harness test rebuilds a slice of app logic in a standalone closure that
+  MIRRORS `app.rs` rather than running it -- the exact shape of the bug that
+  shipped green (the `open_walrus` legacy-reader bug). FIX: a headless
+  `egui_kittest` test that opens a temp multi-file `.wal` through `WalkerApp` and
+  asserts player size / active selection / `current_bytes == reconstruct(file,
+  Index(0))`; also drive `handle_file_action` / `apply_import` against a
+  `TempDir`. Feasible headless (only the `rfd` dialogs are genuinely manual).
+  Effort ~0.5-1 day.
+- [MEDIUM] Walker re-reconstructs the viewed document EVERY FRAME
+  (`app.rs` central panel -> `view::render` -> `source.reconstruct`), while the
+  cached `current_bytes` is used only on a dead fallback arm. Wasteful during
+  playback repaints. FIX: paint from `current_bytes` on the primary arm too
+  (reconstruct only in `refresh_bytes`), or add a per-(file,version) memo in
+  `WalrusSource`. Keep any cache in walker (invariant 2). Effort ~1-2 h + a
+  regression test.
+- [MEDIUM] NFR-1 (400-non-test-line cap) breaches: `crates/walrus/src/archive.rs`
+  (~440; split the container-collection read helpers into an `archive_read.rs`
+  sibling), `crates/walker/src/source/mod.rs` (~472, inflated by the
+  NON-`cfg(test)` `testsupport` module -- gate it behind `cfg(any(test, feature
+  = "testsupport"))` or move to `source/testsupport.rs`, which alone fixes it),
+  `crates/walker/src/app.rs` (~535; split the `ui` render builders into an
+  `app_render.rs`). Pure refactors, verified by existing scoped tests.
+- [MEDIUM] README.md "Using the library" example still names the removed
+  `WalrusFile` type -- rewrite against `Archive` / `FileId` (mirror
+  `crates/walker/tests/integration.rs`). (This ROADMAP update covers the stale
+  walker status the audit also flagged.)
+- [LOW] `rebase.rs::trim_to_versions` is dead production surface (test-only,
+  justified `#[allow(dead_code)]`): either route the Archive generations path
+  through it or drop it and keep its zero-versions guard test against `trim_to`.
+- [LOW] gzip-not-supported returns `WalrusError::Manifest(...)` -- give it a
+  dedicated `UnsupportedCodec` variant for cleaner error taxonomy (`WalrusError`
+  should be `#[non_exhaustive]`, so additive).
+
+Explicitly NOT recommended by the audit: dropping `.wbl` / reverse-log support
+(first-class variant, load-bearing symmetry); moving export backends out from
+behind the `export-*` features or adding GUI deps to `walrus-fmt` (boundary
+confirmed intact).
+
 ## HISTORICAL -- the OLD single-file format work that was re-worked (now superseded)
 
 This section is kept for context only. The items below were the OLD single-file
 implementation; they have ALL been re-worked into the multi-file format per the
-now-complete sequence above. walrus-core no longer uses any of this; `walker` is
-the one place still on the legacy `WalrusFile::open` (step 9, separate stream):
+now-complete sequence above. Neither walrus-core NOR walker uses any of this any
+more: walker was migrated to the `Archive` API (`5726a00`) and the legacy
+`WalrusFile` shim was removed from `walrus-fmt` entirely (`58117df`):
 
 - `walrus-fmt` single-document model (`WalrusFile { base, log }`), the single-doc
   manifest (top-level `document`/`versions`/`checkpoints`), the fixed tar members
