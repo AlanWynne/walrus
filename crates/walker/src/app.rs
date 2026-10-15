@@ -548,6 +548,126 @@ mod tests {
         (dir, path)
     }
 
+    // === Real multi-file `.wal` fixtures for driving the shell ==========
+    //
+    // These build REAL compressed containers (ustar tar + zstd) from the
+    // library's public manifest types, so a `WalkerApp` opens them through the
+    // same `WalrusSource::open` path the GUI uses -- no mirror of the open logic.
+    // Modelled verbatim on the `single_forward_container`/`append` helpers in
+    // `src/source/walrus.rs`'s test module (that module's helpers are private to
+    // it, so a small local copy is unavoidable; it is test-only, excluded from
+    // the NFR-1 cap).
+    use walrus_fmt::{ChangeRecord, Direction, Manifest, TrackedFile, WchgHeader};
+
+    /// One tracked file for a fixture: its archive id, display name, base bytes,
+    /// and the forward splice records that build its newer versions.
+    struct FixtureFile<'a> {
+        id: &'a str,
+        name: &'a str,
+        base: &'a [u8],
+        records: &'a [ChangeRecord],
+    }
+
+    /// Append a ustar member to the tar builder (mode 0o644, mtime 0).
+    fn append(builder: &mut tar::Builder<Vec<u8>>, path: &str, data: &[u8]) {
+        let mut header = tar::Header::new_ustar();
+        header.set_path(path).expect("path");
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        builder.append(&header, data).expect("append");
+    }
+
+    /// Assemble a forward (`.wal`) container holding `files`, each with its own
+    /// base + `.wchg` log, zstd-packed -- the exact shape `WalrusSource::open`
+    /// reads.
+    fn multi_file_wal(files: &[FixtureFile<'_>]) -> Vec<u8> {
+        let mut manifest = Manifest::new(Variant::Wal);
+        for f in files {
+            let count = f.records.iter().filter(|r| r.is_splice()).count();
+            manifest.files.push(TrackedFile::new_with_direction(
+                f.id,
+                f.name,
+                Direction::Forward,
+                count,
+            ));
+        }
+
+        let mut builder = tar::Builder::new(Vec::new());
+        append(
+            &mut builder,
+            "manifest.json",
+            &serde_json::to_vec_pretty(&manifest).expect("manifest"),
+        );
+        for f in files {
+            let count = f.records.iter().filter(|r| r.is_splice()).count();
+            let header = WchgHeader::new(Direction::Forward, 0, f.name, "utf-8", count);
+            let mut wchg = serde_json::to_string(&header).expect("header");
+            wchg.push('\n');
+            for record in f.records {
+                wchg.push_str(&serde_json::to_string(record).expect("record"));
+                wchg.push('\n');
+            }
+            append(&mut builder, &format!("files/{}/base", f.id), f.base);
+            append(
+                &mut builder,
+                &format!("files/{}/{}.wchg", f.id, f.name),
+                wchg.as_bytes(),
+            );
+        }
+        let tar_bytes = builder.into_inner().expect("tar");
+        zstd::stream::encode_all(&tar_bytes[..], 19).expect("zstd")
+    }
+
+    /// A single base-only file with zero splices: a valid archive whose only
+    /// version is the base (`count == 0`), used for the empty/zero-version
+    /// render pass (point 4).
+    fn zero_version_wal() -> Vec<u8> {
+        multi_file_wal(&[FixtureFile {
+            id: "z0",
+            name: "empty.txt",
+            base: b"",
+            records: &[],
+        }])
+    }
+
+    /// The canonical multi-file fixture: file 0 `notes.txt` has base "cat" plus
+    /// two forward splices (so its version `count == 2`), file 1 `data.csv` is
+    /// base-only. Returns the fixture bytes.
+    ///
+    /// Forward index semantics (FORMAT.md section 5): index 0 is CURRENT, the
+    /// far index == splice count is the ORIGINAL. The two splices build newer
+    /// versions on top of "cat", so index 0 differs from index 2.
+    fn canonical_multi_file_wal() -> Vec<u8> {
+        // base "cat"; splice @0 del 0 ins "the " -> "the cat"; splice @7 del 0
+        // ins "!" -> "the cat!". Oldest step first in log order.
+        let notes_records = [
+            ChangeRecord::splice(0, 0, "the "),
+            ChangeRecord::splice(7, 0, "!"),
+        ];
+        multi_file_wal(&[
+            FixtureFile {
+                id: "f0",
+                name: "notes.txt",
+                base: b"cat",
+                records: &notes_records,
+            },
+            FixtureFile {
+                id: "f1",
+                name: "data.csv",
+                base: b"a,b\n1,2\n",
+                records: &[],
+            },
+        ])
+    }
+
+    /// Write fixture `bytes` named `name` under a fresh temp dir; keep the dir
+    /// alive for the test's duration.
+    fn write_temp_wal(bytes: &[u8], name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        temp_file_with(bytes, name)
+    }
+
     /// A file whose leading bytes are the Automerge magic. The remaining bytes
     /// are junk: a feature-OFF open never decodes it (it is rejected at the
     /// sniff), and the feature-ON arm is proven by the headless harness with a
@@ -609,6 +729,206 @@ mod tests {
             "a junk .wal file routes to the walrus arm and surfaces its open \
              error, got: {}",
             app.status
+        );
+    }
+
+    // === Driving the REAL WalkerApp shell (audit section 3.1 gap) =======
+    //
+    // These tests construct a real `WalkerApp` and drive it through its OWN
+    // `open_file`/`open_walrus`/`refresh_bytes` + render path over a real
+    // multi-file `.wal`, asserting on the shell's private model state. They
+    // replace reliance on mirror-closure harnesses for the shell open path: a
+    // divergence between the shell and a hand-written mirror would now be caught.
+    //
+    // MANUAL (NOT tested here, cannot be driven headlessly): `prompt_open`
+    // (OS-native `rfd` open dialog) and the `rfd` SAVE inside the FR-K9 history
+    // panel (`show_history_panel` -> `app_mutate::save_history_report`). A
+    // headless accesskit harness cannot drive an OS-native file dialog, so both
+    // stay manual by design.
+
+    /// Task points 1 and 2: opening a real multi-file `.wal` through the shell
+    /// wires the active selection, sizes the player to the active file's version
+    /// count, records the Walrus variant and a success status, and caches
+    /// `current_bytes` equal to a direct reconstruct at index 0.
+    #[test]
+    fn opening_a_multi_file_wal_through_the_shell_wires_selection_player_and_bytes() {
+        let (_dir, path) = write_temp_wal(&canonical_multi_file_wal(), "notes.wal");
+        let mut app = WalkerApp::default();
+        app.open_file(path);
+
+        // Point 1: the first tracked file is the active selection.
+        let active = app
+            .navigator
+            .active()
+            .cloned()
+            .expect("open must select the first tracked file");
+        assert_eq!(
+            active.id(),
+            0,
+            "the FIRST tracked file is active after open"
+        );
+        assert_eq!(active.name(), "notes.txt");
+
+        // Point 1: the player exists and is sized to the active file's version
+        // count (far index == splice count == 2 for notes.txt).
+        let source = app.source().expect("open must install a read source");
+        let far_index = source.versions(&active).len().saturating_sub(1);
+        assert_eq!(
+            far_index, 2,
+            "notes.txt has two forward splices (count == 2)"
+        );
+        let player = app.player.as_ref().expect("open must build a player");
+        assert_eq!(
+            player.len(),
+            far_index,
+            "the player is sized to the active file's far version index"
+        );
+
+        // Point 1: the source_kind is the Walrus forward (.wal) variant.
+        assert_eq!(
+            app.variant_str(),
+            "wal",
+            "a .wal archive records the Wal variant"
+        );
+
+        // Point 1: status reflects a successful open, not a failure.
+        assert!(
+            !app.status.contains("Failed to open"),
+            "a real archive must open without a failure status, got: {}",
+            app.status
+        );
+        assert!(
+            app.status.contains("Opened"),
+            "a successful open reports 'Opened ...', got: {}",
+            app.status
+        );
+
+        // Point 2: current_bytes equals a direct reconstruct at the current
+        // version (index 0) through the same source.
+        let expected = app
+            .source()
+            .expect("source")
+            .reconstruct(&active, &crate::source::VersionId::Index(0))
+            .expect("reconstruct index 0");
+        assert_eq!(
+            app.current_bytes, expected,
+            "current_bytes caches the reconstruct at index 0 (current version)"
+        );
+        // Sanity: the current version is the newest, built from the two splices.
+        assert_eq!(app.current_bytes, b"the cat!");
+    }
+
+    /// Task point 3: seeking to an older index and refreshing (the way the shell
+    /// wires `refresh_bytes`) updates `current_bytes` to the reconstruct at that
+    /// index, which differs from the current (index 0) version.
+    #[test]
+    fn seeking_older_through_the_shell_refreshes_cached_bytes_to_that_version() {
+        let (_dir, path) = write_temp_wal(&canonical_multi_file_wal(), "notes.wal");
+        let mut app = WalkerApp::default();
+        app.open_file(path);
+        let active = app.navigator.active().cloned().expect("active file");
+
+        let current = app.current_bytes.clone();
+
+        // Drive the seek the way the shell does: move the player's index, then
+        // call the real `refresh_bytes` (the method the audit flags as untested).
+        let older = 2usize; // the far index == original base "cat".
+        app.player.as_mut().expect("player").seek(older);
+        app.refresh_bytes();
+
+        let expected = app
+            .source()
+            .expect("source")
+            .reconstruct(&active, &crate::source::VersionId::Index(older))
+            .expect("reconstruct older index");
+        assert_eq!(
+            app.current_bytes, expected,
+            "after seek + refresh, current_bytes is the reconstruct at the older index"
+        );
+        assert_eq!(
+            app.current_bytes, b"cat",
+            "the far index is the original base"
+        );
+        assert_ne!(
+            app.current_bytes, current,
+            "the older version genuinely differs from the current version"
+        );
+    }
+
+    /// Task point 6 (feasible without extra wiring): driving the private
+    /// `open_walrus` directly (bypassing the magic-byte sniff) wires the SAME
+    /// selection/player/variant/current_bytes invariants as `open_file`. Pins
+    /// `open_walrus` -- the highest-risk untested path the audit names --
+    /// independently of the sniff routing.
+    #[test]
+    fn open_walrus_directly_wires_the_same_invariants_as_open_file() {
+        let (_dir, path) = write_temp_wal(&canonical_multi_file_wal(), "notes.wal");
+        let mut app = WalkerApp::default();
+        app.open_walrus(path);
+
+        let active = app.navigator.active().cloned().expect("active file");
+        assert_eq!(active.id(), 0);
+        assert_eq!(app.variant_str(), "wal");
+        assert!(app.status.contains("Opened"), "got: {}", app.status);
+        let player = app.player.as_ref().expect("player");
+        assert_eq!(player.len(), 2);
+        let expected = app
+            .source()
+            .expect("source")
+            .reconstruct(&active, &crate::source::VersionId::Index(0))
+            .expect("reconstruct index 0");
+        assert_eq!(app.current_bytes, expected);
+    }
+
+    /// Task point 4: the full render path does not panic on a normal open AND on
+    /// an empty/zero-version archive. Each case builds the REAL `WalkerApp` as
+    /// the eframe harness state and runs a FIXED, bounded number of frames (the
+    /// builder's default `max_steps`), so the real `WalkerApp::logic` +
+    /// `WalkerApp::ui` execute through a kittest-provided `eframe::Frame`.
+    /// Reaching the line after `run()` IS the no-panic assertion.
+    #[test]
+    fn rendering_the_real_app_shell_does_not_panic_on_open_or_empty() {
+        // Normal open: a real multi-file archive.
+        let (_dir, path) = write_temp_wal(&canonical_multi_file_wal(), "notes.wal");
+        let mut harness = egui_kittest::Harness::builder().build_eframe(
+            |cc: &mut eframe::CreationContext<'_>| {
+                let mut app = WalkerApp::new(&*cc);
+                app.open_file(path);
+                app
+            },
+        );
+        harness.run();
+        assert!(
+            harness.state().player.is_some(),
+            "the shell renders a loaded archive with a bound player"
+        );
+
+        // Empty / zero-version archive: a single base-only file (count == 0).
+        // The central panel's `player` is Some over a zero-length timeline and
+        // the navigator/status panels paint a single base-only file.
+        let (_zdir, zpath) = write_temp_wal(&zero_version_wal(), "empty.wal");
+        let mut zero = egui_kittest::Harness::builder().build_eframe(
+            |cc: &mut eframe::CreationContext<'_>| {
+                let mut app = WalkerApp::new(&*cc);
+                app.open_file(zpath);
+                app
+            },
+        );
+        zero.run();
+        let zplayer = zero.state().player.as_ref().expect("zero-version player");
+        assert_eq!(
+            zplayer.len(),
+            0,
+            "a base-only file has a zero-length timeline"
+        );
+
+        // A freshly-constructed shell with NOTHING open must also render (the
+        // "No file loaded." central-panel fallback arm).
+        let mut empty = egui_kittest::Harness::builder().build_eframe(|cc| WalkerApp::new(&*cc));
+        empty.run();
+        assert!(
+            empty.state().player.is_none(),
+            "an unopened shell has no player and still renders"
         );
     }
 }

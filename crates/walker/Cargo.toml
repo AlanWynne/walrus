@@ -54,9 +54,14 @@ automerge = { version = "0.12.0", optional = true }
 automerge = ["dep:automerge"]
 
 [dev-dependencies]
-# Headless GUI test harness. Default (egui) harness drives a Ui closure; the
-# eframe feature is not needed for the transport-control harness tests.
-egui_kittest = "0.36"
+# Headless GUI test harness. The default (egui) harness drives a Ui closure for
+# the transport-control harness tests. The `eframe` feature is additionally
+# needed to drive the REAL `WalkerApp` shell headlessly: `build_eframe` supplies
+# the `eframe::Frame` that `WalkerApp::logic`/`ui` require, so the app-shell
+# open/select/seek/render test can run a true frame without a window or GPU.
+# TEST-ONLY (dev) dependency change: no production dependency added; the
+# walrus-fmt boundary (INV-2) is untouched.
+egui_kittest = { version = "0.36", features = ["eframe"] }
 # Temp dirs for the section 8 integration round-trip (on-disk export assertions)
 # and the FR-K2 WalrusSource fixtures written to disk.
 tempfile = "3"
