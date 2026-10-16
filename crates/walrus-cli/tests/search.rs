@@ -6,6 +6,9 @@
 
 mod common;
 
+use tempfile::TempDir;
+use walrus_fmt::{Archive, Manifest, Variant};
+
 use common::{code_of, run_walrus, Fixture};
 
 /// stdout of a finished process as a lossy UTF-8 string.
@@ -137,6 +140,125 @@ fn search_all_versions_reports_each_matching_index() {
             out.contains(&format!("Version index: {index}")),
             "missing version {index} in report:\n{out}"
         );
+    }
+}
+
+#[test]
+fn search_all_versions_omits_versions_without_matches() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walrus(fx.dir.path(), &["search", archive, "the", "--all-versions"]);
+    assert_eq!(code_of(&output), 0);
+    let out = stdout_of(&output);
+    assert!(out.contains("Version index: 0"), "{out}");
+    assert!(!out.contains("Version index: 1"), "{out}");
+    assert!(!out.contains("Version index: 2"), "{out}");
+    assert!(out.contains("1 match(es) in 1 file(s)"), "{out}");
+}
+
+#[test]
+fn search_all_versions_with_no_hits_exits_one() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walrus(
+        fx.dir.path(),
+        &["search", archive, "penguin", "--all-versions"],
+    );
+    assert_eq!(code_of(&output), 1);
+    assert!(stdout_of(&output).contains("0 match(es) in 0 file(s)"));
+}
+
+#[test]
+fn search_all_versions_plain_format_prefixes_each_match_with_its_index() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walrus(
+        fx.dir.path(),
+        &[
+            "search",
+            archive,
+            "cat",
+            "--all-versions",
+            "--format",
+            "plain",
+        ],
+    );
+    assert_eq!(code_of(&output), 0);
+    let out = stdout_of(&output);
+    assert!(out.contains(" versions all\n"), "{out}");
+    for index in 0..=2 {
+        assert!(
+            out.contains(&format!("notes.txt:{index}:")),
+            "plain output omitted version {index}:\n{out}"
+        );
+    }
+    assert!(!out.contains("| Line |"), "{out}");
+}
+
+#[test]
+fn search_all_versions_respects_the_file_mask() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let hit = run_walrus(
+        fx.dir.path(),
+        &["search", archive, "cat", "notes.txt", "--all-versions"],
+    );
+    assert_eq!(code_of(&hit), 0);
+    assert!(stdout_of(&hit).contains("notes.txt"));
+
+    let miss = run_walrus(
+        fx.dir.path(),
+        &["search", archive, "cat", "src/main.rs", "--all-versions"],
+    );
+    assert_eq!(code_of(&miss), 1);
+
+    let single_version = run_walrus(
+        fx.dir.path(),
+        &["search", archive, "fn", "src/main.rs", "--all-versions"],
+    );
+    assert_eq!(code_of(&single_version), 0);
+    assert!(stdout_of(&single_version).contains("Version index: 0"));
+}
+
+#[test]
+fn search_all_versions_reports_each_version_timestamp_for_both_directions() {
+    for (file_name, variant) in [("dated.wal", Variant::Wal), ("dated.wbl", Variant::Wbl)] {
+        let dir = TempDir::new().expect("temp dir");
+        let archive = dir.path().join(file_name);
+        let mut fixture = Archive::new(Manifest::new(variant));
+        fixture
+            .add("dated.txt", b"red", None, None)
+            .expect("add base");
+        fixture
+            .update_at("dated.txt", b"red blue", None, "2026-01-02T00:00:00Z")
+            .expect("add first timestamped version");
+        fixture
+            .update_at("dated.txt", b"green blue", None, "2026-01-03T00:00:00Z")
+            .expect("add second timestamped version");
+        fixture.write(&archive).expect("write archive");
+
+        let output = run_walrus(
+            dir.path(),
+            &[
+                "search",
+                archive.to_str().expect("archive path"),
+                "blue",
+                "--all-versions",
+            ],
+        );
+        assert_eq!(code_of(&output), 0);
+        let out = stdout_of(&output);
+        let current = out
+            .find("Version index: 0 (timestamp: 2026-01-03T00:00:00Z)")
+            .expect("current version timestamp");
+        let previous = out
+            .find("Version index: 1 (timestamp: 2026-01-02T00:00:00Z)")
+            .expect("previous version timestamp");
+        assert!(
+            current < previous,
+            "versions are current-to-original:\n{out}"
+        );
+        assert!(!out.contains("Version index: 2"), "{out}");
     }
 }
 

@@ -145,6 +145,36 @@ class SearchTests(WalrusCase):
         self.assert_stdout_contains(r, "Version index: 0")
         self.assert_stdout_contains(r, "Version index: 1")
 
+    @covers("CLI-DESIGN-5.8-search-all-versions")
+    def test_all_versions_omits_versions_without_a_match(self):
+        arc = self.seed_search_archive()
+        changed_notes = self.write(self.work / "notes.txt", "cats today\n")
+        self.assert_code(self.run_walrus("update", arc, changed_notes), 0)
+
+        r = self.run_walrus("search", arc, "dogs", "--all-versions")
+        self.assert_code(r, 0)
+        self.assert_stdout_contains(r, "Version index: 1")
+        self.assertNotIn("Version index: 0", r.out_text)
+
+    @covers("CLI-DESIGN-5.8-search-all-versions-no-match", "CLI-DESIGN-6-rc1")
+    def test_all_versions_no_match_returns_rc1(self):
+        arc = self.seed_search_archive()
+        r = self.run_walrus("search", arc, "penguin", "--all-versions")
+        self.assert_code(r, 1)
+
+    @covers("CLI-DESIGN-5.8-search-all-versions")
+    def test_all_versions_plain_output_identifies_version(self):
+        arc = self.seed_search_archive()
+        changed_notes = self.write(self.work / "notes.txt", "cats today\n")
+        self.assert_code(self.run_walrus("update", arc, changed_notes), 0)
+        r = self.run_walrus(
+            "search", arc, "cats", "--all-versions", "--format", "plain"
+        )
+        self.assert_code(r, 0)
+        self.assertNotIn("| Line |", r.out_text)
+        self.assert_stdout_contains(r, "notes.txt:0:")
+        self.assert_stdout_contains(r, "notes.txt:1:")
+
     @covers("CLI-DESIGN-5.8-search-all-versions-selector-conflict", "CLI-DESIGN-6-rc2")
     def test_all_versions_rejects_a_version_selector(self):
         arc = self.seed_search_archive()

@@ -135,6 +135,8 @@ REGISTRY: dict[str, str] = {
     "through original and reports matching version indices",
     "CLI-DESIGN-5.8-search-all-versions-selector-conflict": "--all-versions "
     "combined with a version selector is RC 2",
+    "CLI-DESIGN-5.8-search-all-versions-no-match": "--all-versions with no "
+    "matches returns RC 1",
     "CLI-DESIGN-6-rc1": "at least one RC 1 case (search no-match)",
 }
 

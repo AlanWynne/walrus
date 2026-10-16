@@ -13,12 +13,11 @@ rem lands under <work>\Base and each compare targets that sub-path.
 rem ============================================================================
 
 rem -- 0. Paths --------------------------------------------------------------
-rem      TEMPDIR is the scratch work area (wiped and recreated each run). It is
-rem      a DEDICATED subfolder under C:\workspace\temp -- not C:\workspace\temp
-rem      itself -- so the step-1 rmdir /S /Q only ever removes this harness's
-rem      own scratch, never any sibling content under C:\workspace\temp.
-set "REPO=C:\workspace\apps\Walrus"
-set "TEMPDIR=C:\workspace\temp\Walrus-TestData"
+rem      TEMPDIR is the scratch work area (wiped and recreated each run). Its
+rem      default is a DEDICATED subfolder under C:\workspace\temp; if overridden,
+rem      point it at a dedicated scratch folder because step 1 removes it.
+if not defined REPO set "REPO=C:\workspace\apps\Walrus"
+if not defined TEMPDIR set "TEMPDIR=C:\workspace\temp\Walrus-TestData"
 set "BASE=%TEMPDIR%\Base"
 set "WORK0000=%TEMPDIR%\Work0000"
 set "WORK0001=%TEMPDIR%\Work0001"
@@ -26,7 +25,7 @@ set "WORK0002=%TEMPDIR%\Work0002"
 set "WORK0003=%TEMPDIR%\Work0003"
 set "WORK0004=%TEMPDIR%\Work0004"
 
-set "WALRUS=%REPO%\target\debug\walrus.exe"
+if not defined WALRUS set "WALRUS=%REPO%\target\debug\walrus.exe"
 set "REPORT=%REPO%\.gate\tcr\WalrusTestHarness-Report.md"
 
 rem -- 1. Cleanup before start -----------------------------------------------
@@ -413,6 +412,52 @@ set "RC21C=%ERRORLEVEL%"
 echo " After : %WALRUS% search %WORK0000%.wal WALRUS -i   (case-folded hit)"
 echo " Return code: %RC21C%   Expectation: 0 (found via -i)"
 call :report %RC21C% 0 "STEP 21c" "case-insensitive search matches a mixed-case needle" "RC 0 (found)"
+
+rem -- 22. All-versions search over a known two-version archive --------------
+rem      Use a dedicated scratch archive so the searched token is guaranteed
+rem      to exist in both the current and original versions.
+set "ALLVERSIONSSRC=%TEMPDIR%\allversions-source"
+set "ALLVERSIONSARCHIVE=%TEMPDIR%\allversions.wal"
+mkdir "%ALLVERSIONSSRC%"
+> "%ALLVERSIONSSRC%\probe.txt" echo search-version-probe
+"%WALRUS%" add "%ALLVERSIONSARCHIVE%" "%ALLVERSIONSSRC%\probe.txt" --wal > "%TEMPDIR%\allversions-add.log" 2>&1
+set "RC22A=%ERRORLEVEL%"
+call :report %RC22A% 0 "STEP 22a" "create all-versions search fixture" "RC 0"
+> "%ALLVERSIONSSRC%\probe.txt" echo search-version-probe revised
+"%WALRUS%" update "%ALLVERSIONSARCHIVE%" "%ALLVERSIONSSRC%\probe.txt" > "%TEMPDIR%\allversions-update.log" 2>&1
+set "RC22B=%ERRORLEVEL%"
+call :report %RC22B% 0 "STEP 22b" "add a second fixture version" "RC 0"
+
+echo [STEP 22] Search every version: expect matches at index 0 and index 1
+"%WALRUS%" search "%ALLVERSIONSARCHIVE%" search-version-probe --all-versions > "%TEMPDIR%\allversions-search.log" 2>&1
+set "RC22C=%ERRORLEVEL%"
+call :report %RC22C% 0 "STEP 22c" "all-versions search finds history matches" "RC 0"
+findstr /c:"Versions: all" "%TEMPDIR%\allversions-search.log" >nul
+set "RC22D=%ERRORLEVEL%"
+call :report %RC22D% 0 "STEP 22d" "all-versions report identifies its scope" "Versions all"
+findstr /c:"Version index: 0" "%TEMPDIR%\allversions-search.log" >nul
+set "RC22E=%ERRORLEVEL%"
+call :report %RC22E% 0 "STEP 22e" "all-versions report includes current version" "index 0"
+findstr /c:"Version index: 1" "%TEMPDIR%\allversions-search.log" >nul
+set "RC22F=%ERRORLEVEL%"
+call :report %RC22F% 0 "STEP 22f" "all-versions report includes original version" "index 1"
+
+"%WALRUS%" search "%ALLVERSIONSARCHIVE%" search-version-probe --all-versions --index 0 > "%TEMPDIR%\allversions-selector.log" 2>&1
+set "RC22G=%ERRORLEVEL%"
+call :report %RC22G% 2 "STEP 22g" "all-versions rejects a version selector" "RC 2"
+
+"%WALRUS%" convert "%ALLVERSIONSARCHIVE%" --to wbl -o "%TEMPDIR%\allversions.wbl" > "%TEMPDIR%\allversions-convert.log" 2>&1
+set "RC22H=%ERRORLEVEL%"
+call :report %RC22H% 0 "STEP 22h" "convert the fixture to reverse-log form" "RC 0"
+"%WALRUS%" search "%TEMPDIR%\allversions.wbl" search-version-probe --all-versions > "%TEMPDIR%\allversions-wbl-search.log" 2>&1
+set "RC22I=%ERRORLEVEL%"
+call :report %RC22I% 0 "STEP 22i" "all-versions search works on a reverse-log archive" "RC 0"
+findstr /c:"Version index: 0" "%TEMPDIR%\allversions-wbl-search.log" >nul
+set "RC22J=%ERRORLEVEL%"
+call :report %RC22J% 0 "STEP 22j" "reverse-log report includes current version" "index 0"
+findstr /c:"Version index: 1" "%TEMPDIR%\allversions-wbl-search.log" >nul
+set "RC22K=%ERRORLEVEL%"
+call :report %RC22K% 0 "STEP 22k" "reverse-log report includes original version" "index 1"
 
 rem -- 90. Report summary ----------------------------------------------------
 echo.
