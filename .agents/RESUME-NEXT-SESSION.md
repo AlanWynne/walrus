@@ -805,3 +805,28 @@ the repo tree -- already verified green (9/9, TCR 132/131/PASS).
    so do not stage them. No commit or push was made in this resume.
 2. For Tier C, choose one optional feature and start a fresh worktree from the
    latest `main` per the branch hygiene rules.
+
+---
+
+## SESSION 2026-10-16 -- Tier C all-versions search
+
+Implemented `--all-versions` for both `walrus search` and `walx search` on the
+fresh `feature/all-versions-search` branch from `24b0c8b`. The option searches
+each selected file from current index 0 through original index `count`, rejects
+version selectors with RC 2, and renders per-version timestamp sections (or
+includes the version index in each plain-output match line). Search reconstruction
+is lazy across versions so the CLI does not retain every reconstructed document
+at once. `CLI-DESIGN.md` and `ROADMAP.md` record the interface and status.
+
+Verification passed:
+- `cargo test -p wal-cli-common -p walrus-cli -p walx`: all tests passed,
+  including all-version `.wal`/`.wbl` cases and selector-conflict checks.
+- `cargo clippy -p walrus-fmt -p wal-cli-common -p walrus-cli -p walx
+  --all-targets -- -D warnings`
+- `cargo fmt --all --check`
+- Acceptance TCR: 134 run, 133 passed, 0 failed, 1 skipped; no uncovered
+  requirements.
+
+The full owner gate has NOT been run for this feature. Before treating it as
+complete or merging it, run `cargo gate --build` in this worktree and verify the
+report is clean. Then continue to Tier C item 7 (office-container).

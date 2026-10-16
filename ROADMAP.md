@@ -82,11 +82,11 @@ passed and 0 failed. Report: `.gate/gate.report.log`.
 
 ### Tier C -- OPTIONAL features (each its own worktree off latest `main`)
 
-6. ALL-VERSIONS search: wire the existing `search_versions` range primitive +
-   the version-range renderer seam through the CLI (grouping/collapsing by
-   version-index range with per-version timestamps). The library + seam already
-   exist; this is CLI + renderer work only. Spec the RC behaviour in
-   CLI-DESIGN section 6 first.
+6. [IMPLEMENTED, scoped checks pass; full gate pending] ALL-VERSIONS search:
+   both CLIs now expose `--all-versions`, search current through original for
+   every selected file, and report matches grouped by version with timestamps.
+   Specified in CLI-DESIGN section 5.8; combining the flag with a selector is
+   RC 2.
 7. OFFICE-CONTAINER (ODF / OOXML): store an office document by unpacking its
    inner zip parts, tracking each as a grouped file, repacking byte-identically
    on extract. Approved, design-reviewed planning at
@@ -103,9 +103,9 @@ passed and 0 failed. Report: `.gate/gate.report.log`.
 
 ### Suggested next move
 
-Tier A and B are full-gate verified. Review and commit only the intended
-Tier A/B changes; then choose an optional Tier C feature in a fresh worktree
-based on the latest `main`.
+Tier A and B are full-gate verified. Tier C item 6 is implemented on its
+feature branch; run the owner full gate before merging. Then choose an optional
+Tier C feature in a fresh worktree based on the latest `main`.
 
 ## Design decisions locked (see CLI-DESIGN.md)
 
@@ -243,21 +243,21 @@ integration tests (`crates/walx/tests/search.rs`,
 reference at `.agents/tasks/walrus-search/plan.md`.
 
 ACCEPTANCE + HARNESS COVERAGE (added 2026-10-16): the Python acceptance suite
-now has `tests/acceptance/walrus_cli/test_search.py` (9 tests: literal-found +
-Markdown report fields RC 0, no-match RC 1, `-i`, `--format plain`, file-mask,
-two-selectors RC 2, index-beyond-last RC 4, `--regex`, and a read-only guard),
-with the matching requirement ids registered in `requirements.py`
-(`CLI-DESIGN-5.6-search-*` + `CLI-DESIGN-6-rc1`). TCR after the addition: 132
-tests, 131 pass, 0 fail, 1 skip, 0 uncovered, verdict PASS. The manual harness
+has `tests/acceptance/walrus_cli/test_search.py` (11 tests: single-version
+found/no-match, `-i`, `--format plain`, file-mask, selectors, index clamp,
+`--regex`, read-only guard, all-version reporting, and selector conflict), with
+the matching requirement ids registered in `requirements.py`
+(`CLI-DESIGN-5.8-search-*` + `CLI-DESIGN-6-rc1`). The latest TCR: 134 tests,
+133 pass, 0 fail, 1 skip, 0 uncovered, verdict PASS. The manual harness
 (`WalrusTestHarness.bat` + `.sh`) gained STEP 21: search a known literal (RC 0),
 an absent string (RC 1), and case-insensitive `-i` (RC 0); its STEP 19 also
 picks up `test_search.py` automatically.
 
 Shape (as shipped):
 - MATCHER lives in `walrus-fmt` as pure logic over reconstructed bytes
-  (`crates/walrus/src/search.rs`: `search_version` single-version primitive +
-  `search_versions` range stub for the deferred all-versions path). Honors the
-  dependency boundary -- it opens no archives and touches no CLI.
+  (`crates/walrus/src/search/mod.rs`: `search_version` single-version primitive
+  + `search_versions` range composition). Honors the dependency boundary -- it
+  opens no archives and touches no CLI.
 - REGEX is behind a new OPT-IN `search-regex` cargo feature on `walrus-fmt`
   (pulls the pure-Rust `regex` crate), mirroring the `diff` / `i18n` /
   `export-*` feature pattern so the default build and a playback-only embedder
@@ -267,14 +267,14 @@ Shape (as shipped):
   wired as a `search` subcommand into both `walx` and `walrus-cli`. Reuses the
   existing selector / mask / `reconstruct_with_fallback` helpers.
 - RETURN CODES (grep convention): 0 found, 1 no matches, 2 usage, 4 beyond-last
-  numeric-index clamp. The RC-1 "no matches" row is search-specific and is to be
-  documented in CLI-DESIGN section 6.
+  numeric-index clamp in single-version mode. All-versions mode rejects a
+  selector with RC 2 and has no clamp case; both details are in CLI-DESIGN
+  sections 5.8 and 6.
 - LINE/COLUMN rule: byte offset authoritative; line = 1 + LF count before the
   match; column = 1-based in Unicode scalar values; CR is an ordinary char.
-- ALL-VERSIONS search is DESIGNED-FOR but DEFERRED: the `search_versions` range
-  primitive and the version-range renderer seam exist, but the CLI wires only
-  single-version search for now. This is the one remaining search follow-up
-  (see "Going forward" below).
+- ALL-VERSIONS search is implemented by both CLIs using the `search_versions`
+  primitive. `--all-versions` searches every version and groups report output
+  by version index; a selector with the flag is a usage error (RC 2).
 
 ## Future features -- DESIGNED, not yet started
 

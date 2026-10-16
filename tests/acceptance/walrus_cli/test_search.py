@@ -1,4 +1,4 @@
-"""Acceptance tests for `walrus search` (CLI-DESIGN 5.6).
+"""Acceptance tests for `walrus search` (CLI-DESIGN 5.8).
 
 Search finds a string in one version of each selected tracked file and reports
 WHERE it was found (file, version index, byte offset, 1-based line, 1-based
@@ -8,7 +8,8 @@ column) as a Markdown report (default) or plain text. The engine is shared with
 
 Command shape:
   walrus search <archive> <string> [file-mask] [selector]
-                [-i|--ignore-case] [--regex] [--format markdown|plain]
+                [--all-versions] [-i|--ignore-case] [--regex]
+                [--format markdown|plain]
 
 Return codes (CLI-DESIGN section 6):
   0 found, 1 no match (grep convention; search-specific), 2 usage,
@@ -47,7 +48,7 @@ class SearchTests(WalrusCase):
         self.assert_code(self.run_walrus("add", arc, main), 0)
         return arc
 
-    @covers("CLI-DESIGN-5.6-search-found", "CLI-DESIGN-6-rc0")
+    @covers("CLI-DESIGN-5.8-search-found", "CLI-DESIGN-6-rc0")
     def test_literal_found_prints_markdown_report_and_exits_zero(self):
         arc = self.seed_search_archive()
         r = self.run_walrus("search", arc, "cats")
@@ -60,13 +61,13 @@ class SearchTests(WalrusCase):
         self.assert_stdout_contains(r, "Version timestamp:")
         self.assert_stdout_contains(r, "| Line | Col | Byte offset | Match |")
 
-    @covers("CLI-DESIGN-5.6-search-nomatch", "CLI-DESIGN-6-rc1")
+    @covers("CLI-DESIGN-5.8-search-nomatch", "CLI-DESIGN-6-rc1")
     def test_no_match_exits_one(self):
         arc = self.seed_search_archive()
         r = self.run_walrus("search", arc, "penguin")
         self.assert_code(r, 1)
 
-    @covers("CLI-DESIGN-5.6-search-ignore-case")
+    @covers("CLI-DESIGN-5.8-search-ignore-case")
     def test_case_insensitive_flag_matches_mixed_case(self):
         arc = self.seed_search_archive()
         # Case-sensitive: the needle 'CATS' is not present verbatim.
@@ -76,7 +77,7 @@ class SearchTests(WalrusCase):
         caseless = self.run_walrus("search", arc, "CATS", "-i")
         self.assert_code(caseless, 0)
 
-    @covers("CLI-DESIGN-5.6-search-plain")
+    @covers("CLI-DESIGN-5.8-search-plain")
     def test_plain_format_omits_markdown_table(self):
         arc = self.seed_search_archive()
         r = self.run_walrus("search", arc, "cats", "--format", "plain")
@@ -88,7 +89,7 @@ class SearchTests(WalrusCase):
         # Plain output lists the file that matched.
         self.assert_stdout_contains(r, "notes.txt")
 
-    @covers("CLI-DESIGN-5.6-search-mask")
+    @covers("CLI-DESIGN-5.8-search-mask")
     def test_file_mask_restricts_to_matching_files(self):
         arc = self.seed_search_archive()
         # 'main' lives only in main.rs; masking to notes.txt finds nothing.
@@ -98,7 +99,7 @@ class SearchTests(WalrusCase):
         hit = self.run_walrus("search", arc, "main", "main.rs")
         self.assert_code(hit, 0)
 
-    @covers("CLI-DESIGN-5.6-search-selector", "CLI-DESIGN-6-rc2")
+    @covers("CLI-DESIGN-5.8-search-selector", "CLI-DESIGN-6-rc2")
     def test_two_selectors_is_usage_error(self):
         arc = self.seed_search_archive()
         r = self.run_walrus(
@@ -106,14 +107,14 @@ class SearchTests(WalrusCase):
         )
         self.assert_code(r, 2)
 
-    @covers("CLI-DESIGN-5.6-search-beyond-last", "CLI-DESIGN-6-rc4")
+    @covers("CLI-DESIGN-5.8-search-beyond-last", "CLI-DESIGN-6-rc4")
     def test_index_beyond_last_clamps_and_exits_rc4(self):
         arc = self.seed_search_archive()
         # Single-version files: index 9 is well beyond the last -> clamp + RC 4.
         r = self.run_walrus("search", arc, "cats", "--index", "9")
         self.assert_code(r, 4)
 
-    @covers("CLI-DESIGN-5.6-search-regex")
+    @covers("CLI-DESIGN-5.8-search-regex")
     def test_regex_flag_matches_pattern(self):
         arc = self.seed_search_archive()
         # 'ca.s' matches 'cats'; --regex is available because the CLI binaries
@@ -121,7 +122,7 @@ class SearchTests(WalrusCase):
         r = self.run_walrus("search", arc, "ca.s", "--regex")
         self.assert_code(r, 0)
 
-    @covers("CLI-DESIGN-5.6-search-found")
+    @covers("CLI-DESIGN-5.8-search-found")
     def test_search_matches_walx_behaviour_is_read_only(self):
         # Search must not mutate the archive: its bytes are identical before and
         # after a search (read-only guarantee).
@@ -131,6 +132,24 @@ class SearchTests(WalrusCase):
         self.assertEqual(
             arc.read_bytes(), before, "search must not modify the archive"
         )
+
+    @covers("CLI-DESIGN-5.8-search-all-versions")
+    def test_all_versions_reports_matches_from_current_and_original(self):
+        arc = self.seed_search_archive()
+        changed_notes = self.write(self.work / "notes.txt", "cats today\n")
+        self.assert_code(self.run_walrus("update", arc, changed_notes), 0)
+
+        r = self.run_walrus("search", arc, "cats", "--all-versions")
+        self.assert_code(r, 0)
+        self.assert_stdout_contains(r, "Versions: all")
+        self.assert_stdout_contains(r, "Version index: 0")
+        self.assert_stdout_contains(r, "Version index: 1")
+
+    @covers("CLI-DESIGN-5.8-search-all-versions-selector-conflict", "CLI-DESIGN-6-rc2")
+    def test_all_versions_rejects_a_version_selector(self):
+        arc = self.seed_search_archive()
+        r = self.run_walrus("search", arc, "cats", "--all-versions", "--index", "0")
+        self.assert_code(r, 2)
 
 
 if __name__ == "__main__":

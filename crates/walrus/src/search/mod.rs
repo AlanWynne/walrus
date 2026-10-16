@@ -5,10 +5,9 @@
 //! index they belong to and reports every occurrence of a needle. Keeping the
 //! matcher pure honours the dependency boundary (invariant 2) and -- crucially
 //! for the roadmap -- lets the single-version primitive [`search_version`]
-//! compose into a future all-versions search without a redesign: an
-//! all-versions result set is just a longer `Vec<Match>` whose entries carry
-//! differing [`Match::version_index`] values. [`search_versions`] is the
-//! documented composition point for that follow-up.
+//! compose into an all-versions result set whose entries carry differing
+//! [`Match::version_index`] values. [`search_versions`] is the shared
+//! composition point used by the CLI.
 //!
 //! The pure line/column deriver lives in the [`line_col`] submodule so this
 //! file stays within the per-file line cap (NFR-1); it is a by-concern split
@@ -106,8 +105,8 @@ pub struct Match {
 /// roadmap composes it over an index range (see [`search_versions`]) without a
 /// redesign, because each [`Match`] already carries its own version index.
 ///
-/// An EMPTY needle matches nothing and returns `Ok(vec![])` for every mode
-/// (defined behaviour: avoids an infinite stream of zero-width hits).
+/// An EMPTY literal needle matches nothing and returns `Ok(vec![])`. An empty
+/// regex is invalid and returns [`WalrusError::SearchPattern`].
 ///
 /// # Errors
 /// Only the regex mode can error, and only when the `search-regex` feature is
@@ -121,9 +120,14 @@ pub fn search_version(
     needle: &str,
     opts: &SearchOptions,
 ) -> Result<Vec<Match>> {
-    // An empty needle matches nothing, for every mode (defined behaviour).
     if needle.is_empty() {
-        return Ok(Vec::new());
+        match &opts.mode {
+            MatchMode::Literal => return Ok(Vec::new()),
+            #[cfg(feature = "search-regex")]
+            MatchMode::Regex => {
+                return Err(WalrusError::SearchPattern("empty pattern".to_string()));
+            }
+        }
     }
 
     let spans = match &opts.mode {
@@ -272,28 +276,34 @@ fn regex_spans(bytes: &[u8], pattern: &str, case_insensitive: bool) -> Result<Ve
 }
 
 /// Search an inclusive range of version indices, concatenating each version's
-/// matches in order. This is the ALL-VERSIONS composition point: it loops the
-/// single-version primitive and relies on each [`Match`] carrying its own
-/// `version_index`, so no result-shape redesign is needed when the CLI wires an
-/// all-versions search. It is NOT yet wired to any CLI command.
+/// matches in order. The CLI reconstructs each version and passes the indexed
+/// byte slices here, keeping the matcher independent from archive I/O.
 ///
-/// `versions` yields `(version_index, version_ts, bytes)` triples; the caller
-/// reconstructs each version (the matcher stays reconstruct-engine-agnostic).
+/// `versions` yields fallible `(version_index, version_ts, bytes)` triples;
+/// the caller reconstructs lazily so only one version's bytes need to be held.
 ///
 /// # Errors
-/// Propagates any error from [`search_version`] (regex compilation only).
-pub fn search_versions<'a, I>(
+/// Propagates an error from the version iterator or [`search_version`].
+pub fn search_versions<I>(
     file_name: &str,
     versions: I,
     needle: &str,
     opts: &SearchOptions,
 ) -> Result<Vec<Match>>
 where
-    I: IntoIterator<Item = (usize, Option<&'a str>, &'a [u8])>,
+    I: IntoIterator<Item = Result<(usize, Option<String>, Vec<u8>)>>,
 {
     let mut all = Vec::new();
-    for (version_index, version_ts, bytes) in versions {
-        let mut hits = search_version(file_name, version_index, version_ts, bytes, needle, opts)?;
+    for version in versions {
+        let (version_index, version_ts, bytes) = version?;
+        let mut hits = search_version(
+            file_name,
+            version_index,
+            version_ts.as_deref(),
+            &bytes,
+            needle,
+            opts,
+        )?;
         all.append(&mut hits);
     }
     Ok(all)
@@ -456,8 +466,8 @@ mod tests {
         let v3 = b"walrus here".to_vec();
         let v5 = b"a walrus and a walrus".to_vec();
         let versions = vec![
-            (3usize, Some("2020-01-01T00:00:00Z"), v3.as_slice()),
-            (5usize, Some("2021-01-01T00:00:00Z"), v5.as_slice()),
+            Ok((3usize, Some("2020-01-01T00:00:00Z".to_string()), v3)),
+            Ok((5usize, Some("2021-01-01T00:00:00Z".to_string()), v5)),
         ];
         let hits = search_versions("doc.txt", versions, "walrus", &SearchOptions::default())
             .expect("range search");
@@ -492,6 +502,18 @@ mod tests {
         };
         let err = search_version("doc.txt", 0, None, bytes, "(", &opts)
             .expect_err("invalid pattern must error");
+        assert!(matches!(err, WalrusError::SearchPattern(_)));
+    }
+
+    #[cfg(feature = "search-regex")]
+    #[test]
+    fn search_regex_empty_pattern_is_a_typed_error() {
+        let opts = SearchOptions {
+            mode: MatchMode::Regex,
+            ..SearchOptions::default()
+        };
+        let err = search_version("doc.txt", 0, None, b"anything", "", &opts)
+            .expect_err("empty regex must error");
         assert!(matches!(err, WalrusError::SearchPattern(_)));
     }
 }

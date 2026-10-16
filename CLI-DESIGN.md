@@ -1093,14 +1093,15 @@ walrus convert <archive> [file-mask] --to <wal|wbl> [-o <name>]
 ### 5.8 Search (find a string) -- DECIDED
 
 ```
-walrus search <archive> <string> [file-mask] [selector] [-i|--ignore-case] [--regex] [--format <markdown|plain>]
-walx   search <archive> <string> [file-mask] [selector] [-i|--ignore-case] [--regex] [--format <markdown|plain>]
+walrus search <archive> <string> [file-mask] [selector] [--all-versions] [-i|--ignore-case] [--regex] [--format <markdown|plain>]
+walx   search <archive> <string> [file-mask] [selector] [--all-versions] [-i|--ignore-case] [--regex] [--format <markdown|plain>]
 ```
 
 Search is READ-ONLY, so it is offered IDENTICALLY by both the full `walrus` tool
 and the extract-only `walx` tool (same shared engine, same behaviour). It
-reconstructs each selected file at the chosen version and reports every
-occurrence of `<string>`.
+reconstructs each selected file at the chosen version, or across its full
+history when `--all-versions` is given, and reports every occurrence of
+`<string>`.
 
 - `<string>` is the needle: a literal substring by default, or a regular
   expression when `--regex` is given.
@@ -1114,6 +1115,10 @@ occurrence of `<string>`.
   in extract/cat. A beyond-last NUMERIC `--index` clamps to the file's original
   version with a warning on stderr and exits RC 4 (the clamp dominates the
   found/no-match result), reusing the extract clamp-and-warn contract.
+- `--all-versions`: search every version index from current (`0`) through the
+  original (`count`), inclusive, independently for each selected file. It
+  cannot be combined with any version selector; that combination is a usage
+  error (RC 2). All-versions search has no clamp case.
 - `-i` / `--ignore-case`: fold case when matching (literal and regex alike).
 - `--regex`: treat `<string>` as a regular expression. This activates the
   `walrus-fmt` `search-regex` cargo feature, which the CLI binaries enable; an
@@ -1122,7 +1127,7 @@ occurrence of `<string>`.
 - `--format`: `markdown` (DEFAULT) or `plain`. stdout carries the report;
   diagnostics and the clamp warning go to stderr.
 
-OUTPUT (Markdown report, the default). A header carries:
+OUTPUT (Markdown report, the default). A single-version header carries:
 - the archive name/path,
 - the version INDEX searched, and
 - that version's CHANGE TIMESTAMP (the `ts` of the record that produced the
@@ -1142,19 +1147,17 @@ with a `match(es) in file(s)` summary count. `--format plain` emits one
 `file:line:col:offset:match` line per hit plus a summary line, with no Markdown
 table syntax, for piping.
 
-ALL-VERSIONS SEARCH (DESIGNED-FOR, DEFERRED). The report data model is
-version-agnostic: every per-match fact -- including its version index and that
-version's timestamp -- rides on the individual match, never a single
-report-level scalar. A future all-versions search (e.g. collapse to an index
-RANGE "versions 55-36", or expand per-version with each version's timestamp)
-therefore composes WITHOUT a redesign; the `walrus-fmt` `search_versions` range
-primitive is the composition seam and is NOT yet wired to the CLI. Only
-single-version search ships now.
+For `--all-versions`, the Markdown header says `Versions: all`; each matching
+file has a subsection per matching version index, with that version's timestamp
+and the same match table. Plain output prefixes each match with its version
+index (`file:index:line:col:offset:match`). Versions are reported in ascending
+index order (current to original); versions with no matches are omitted.
 
 - RETURN CODES: matches found -> RC 0; a valid search with zero matches -> RC 1
-  (grep convention); usage error (two selectors, unknown option, `--regex` with
-  an invalid pattern, bad `--at`/`--format`) -> RC 2; beyond-last numeric
-  `--index` clamp -> RC 4 (dominates the found/no-match result).
+  (grep convention); usage error (two selectors, selector with
+  `--all-versions`, unknown option, `--regex` with an invalid pattern, bad
+  `--at`/`--format`) -> RC 2; beyond-last numeric `--index` clamp in
+  single-version mode -> RC 4 (dominates the found/no-match result).
 
 ---
 
@@ -1165,13 +1168,16 @@ single-version search ships now.
 | 0    | Success (includes a no-change add/update no-op, section 5.4; and `search` finding at least one match) |
 | 1    | `search` only: a valid search that found NO matches (grep convention, section 5.8) |
 | 2    | Usage error (unknown option, mutually exclusive operations, bad args, an add/update file-input pattern matching no files per section 5.4f) |
-| 4    | Extract / cat / search index beyond the last recorded change; original returned with a warning |
+| 4    | Extract / cat / single-version search index beyond the last recorded change; original returned with a warning |
 | 8    | Target file does not exist in the archive (update / remove / condense / convert) |
 
 RC 1 is search-specific: it is otherwise the general-failure code, so `search`
 returns it deliberately for the "nothing found" outcome (never as an error) and
 the contract is stated explicitly here. For `search`, a beyond-last numeric
-`--index` clamp (RC 4) dominates both the found (0) and no-match (1) results.
+`--index` clamp in single-version mode (RC 4) dominates both the found (0) and
+no-match (1) results. `search --all-versions` rejects any version selector with
+RC 2; it searches each file's complete `[0, count]` range, so there is no clamp
+case and its return code is only RC 0 (matches) or RC 1 (no matches).
 
 DECIDED: RC 2 for usage errors (standard GNU convention), including the
 multi-match remove-without-`--force` case.
@@ -1184,6 +1190,7 @@ library error enum stay aligned:
 |-------------------------------|---------|-------------|
 | `NotTracked` | `update` / `remove` / `condense` / `convert` on a file absent from the archive | 8 |
 | `AmbiguousRemove` | `remove` with a mask matching more than one file and no `--force` | 2 |
+| `SearchPattern` | `search --regex` with an invalid or empty pattern | 2 |
 | `BinaryInput` | a non-text (binary / invalid-UTF-8 / NUL-bearing) input to `add` / `update` | general failure, non-zero; aborts the batch transaction (5.4a) |
 | `SpliceNotCharBoundary` | an editor-supplied splice that falls mid-UTF-8-character (library/editor path; not reachable from the file-oriented CLI) | general failure, non-zero |
 
