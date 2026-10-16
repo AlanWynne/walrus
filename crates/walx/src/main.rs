@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
+use walrus_fmt::WalrusError;
 
 use wal_cli_common::cat::{self, CatArgs};
 use wal_cli_common::error::CliError;
@@ -28,11 +29,17 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            // A typed CliError carries its own return code; anything else is a
-            // general failure (RC 1 via anyhow).
+            // A typed CLI error carries its own code; invalid regex patterns
+            // are also usage errors. Other failures map to RC 1.
             if let Some(cli) = e.downcast_ref::<CliError>() {
                 eprintln!("walx: {}", cli.message);
                 ExitCode::from(cli.code)
+            } else if e
+                .downcast_ref::<WalrusError>()
+                .is_some_and(|error| matches!(error, WalrusError::SearchPattern(_)))
+            {
+                eprintln!("walx: {e:#}");
+                ExitCode::from(2)
             } else {
                 eprintln!("walx: {e:#}");
                 ExitCode::FAILURE
@@ -82,6 +89,7 @@ struct Scan {
     sanitize: bool,
     case_insensitive: bool,
     regex: bool,
+    all_versions: bool,
     format: OutputFormat,
 }
 
@@ -99,6 +107,7 @@ fn scan(tokens: &[String], allow_disk: bool, allow_search: bool) -> Result<Scan,
         sanitize: false,
         case_insensitive: false,
         regex: false,
+        all_versions: false,
         format: OutputFormat::Markdown,
     };
     let mut options_done = false;
@@ -145,6 +154,7 @@ fn scan(tokens: &[String], allow_disk: bool, allow_search: bool) -> Result<Scan,
             "--sanitize" if allow_disk => scan.sanitize = true,
             "-i" | "--ignore-case" if allow_search => scan.case_insensitive = true,
             "--regex" if allow_search => scan.regex = true,
+            "--all-versions" if allow_search => scan.all_versions = true,
             "--format" if allow_search => {
                 let value = take_value(name, inline, &mut iter)?;
                 scan.format = parse_format(&value)?;
@@ -232,6 +242,11 @@ fn parse_cat(tokens: &[String]) -> Result<CatArgs, CliError> {
 /// `search <archive> <string> [file-mask] [selector] [-i] [--regex] [--format]`.
 fn parse_search(tokens: &[String]) -> Result<SearchArgs, CliError> {
     let scan = scan(tokens, false, true)?;
+    if scan.all_versions && scan.selector.is_some() {
+        return Err(CliError::usage(
+            "--all-versions cannot be combined with a version selector",
+        ));
+    }
     let mut positionals = scan.positionals.into_iter();
     let archive = positionals.next().ok_or_else(|| {
         CliError::usage("usage: walx search <archive> <string> [file-mask] [selector]")
@@ -250,6 +265,7 @@ fn parse_search(tokens: &[String]) -> Result<SearchArgs, CliError> {
         needle,
         mask,
         selector: selector::effective_selector(scan.selector),
+        all_versions: scan.all_versions,
         case_insensitive: scan.case_insensitive,
         regex: scan.regex,
         format: scan.format,
@@ -274,7 +290,7 @@ fn print_usage() {
          USAGE:\n\
          \x20 walx extract <archive> [file-mask] [selector] [-o <dir>] [--force] [--sanitize]\n\
          \x20 walx cat     <archive> <file>      [selector]\n\
-         \x20 walx search  <archive> <string> [file-mask] [selector] [-i] [--regex] [--format <markdown|plain>]\n\n\
+         \x20 walx search  <archive> <string> [file-mask] [selector] [--all-versions] [-i] [--regex] [--format <markdown|plain>]\n\n\
          SELECTOR (at most one):\n\
          \x20 --index <n> | --version <current|original|+/-n> | --at <YYYY-MM-DDThh:mm:ssZ>\n"
     );

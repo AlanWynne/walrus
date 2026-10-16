@@ -198,7 +198,7 @@ pub fn print_usage() {
          \x20 walrus query    <archive> [file-mask] [-l]\n\
          \x20 walrus extract  <archive> [file-mask] [selector] [-o <dir>] [--force] [--sanitize]\n\
          \x20 walrus cat      <archive> <file>      [selector]\n\
-         \x20 walrus search   <archive> <string> [file-mask] [selector] [-i] [--regex] [--format <markdown|plain>]\n\
+         \x20 walrus search   <archive> <string> [file-mask] [selector] [--all-versions] [-i] [--regex] [--format <markdown|plain>]\n\
          \x20 walrus add      <archive> <files...>  [--generations <n>] [--wal|--wbl|--direction <d>] [-R]\n\
          \x20 walrus update   <archive> <files...>  [--generations <n>] [-R]\n\
          \x20 walrus remove   <archive> <file-mask> [--force]\n\

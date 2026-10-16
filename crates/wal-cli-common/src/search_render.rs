@@ -1,19 +1,18 @@
 //! The search report data model and its Markdown / plain renderers
-//! (CLI-DESIGN 5.6).
+//! (CLI-DESIGN 5.8).
 //!
 //! The data model is deliberately VERSION-AGNOSTIC. A [`SearchReport`] carries
 //! the archive display string and a list of [`FileGroup`]s; every per-match
 //! fact -- including the version index and that version's change timestamp --
 //! lives on the individual [`walrus_fmt::Match`], never as a single
-//! report-level scalar. The single-version renderer here groups matches by
-//! file; the SEAM comment below marks where an all-versions renderer will
-//! instead collapse/expand by version index (e.g. "versions 55-36" or a
-//! per-version listing with each version's timestamp) WITHOUT a data-model
-//! change, because the index already rides on each match.
+//! report-level scalar. The all-versions renderer groups these matches by
+//! version index without changing the match data model.
+
+use std::collections::BTreeMap;
 
 use walrus_fmt::Match;
 
-/// The output format for a rendered report (CLI-DESIGN 5.6). Markdown is the
+/// The output format for a rendered report (CLI-DESIGN 5.8). Markdown is the
 /// default; plain is the pipe-friendly form that omits table syntax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
@@ -27,8 +26,8 @@ pub enum OutputFormat {
 /// One file's matches within a report, in match (byte-offset) order.
 ///
 /// A group never stores "the version index" as a scalar: the index and its
-/// timestamp are read off each [`Match`], so a future all-versions report can
-/// hold matches from several versions in one group untouched.
+/// timestamp are read off each [`Match`], so all-versions reports can hold
+/// matches from several versions in one group untouched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileGroup {
     /// The tracked file's stored name/path.
@@ -39,19 +38,30 @@ pub struct FileGroup {
 
 /// A whole search report: the archive display string and the per-file groups.
 ///
-/// The report level is version-agnostic. For the single-version search shipped
-/// now, every match shares one `version_index`/`version_ts`, which the header
-/// renders once; the model does not depend on that being true (SEAM below).
+/// The report scope selects single-version or all-versions rendering, while
+/// each match carries its own version index and timestamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchReport {
     /// How the archive is displayed in the header (its path/name).
     pub archive_display: String,
-    /// The version index that was searched (the resolved, concrete index).
-    pub version_index: usize,
-    /// The searched version's change timestamp, if one is known.
-    pub version_ts: Option<String>,
+    /// The searched version scope.
+    pub scope: SearchScope,
     /// The per-file match groups, in archive (manifest) order.
     pub groups: Vec<FileGroup>,
+}
+
+/// Whether a search covers one version or the file's complete history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchScope {
+    /// A single resolved version.
+    Version {
+        /// Concrete index searched in each selected file.
+        index: usize,
+        /// Timestamp of the change that produced the version, if available.
+        timestamp: Option<String>,
+    },
+    /// Every version from current through original.
+    AllVersions,
 }
 
 impl SearchReport {
@@ -73,42 +83,51 @@ impl SearchReport {
         }
     }
 
-    /// Render a Markdown report: a header carrying the archive, the searched
-    /// index and its change timestamp, then one table per file with matches,
+    /// Render a Markdown report with the searched version(s), match tables,
     /// and a trailing match/file-count summary.
-    ///
-    /// SEAM (all-versions, deferred): a future all-versions renderer groups or
-    /// collapses by `Match::version_index` here -- either a collapsed index
-    /// RANGE line ("versions 55-36") or an expanded per-version section with
-    /// each version's `version_ts` -- reading both facts off each match. No
-    /// field needs to change; only this method gains a second grouping mode.
     fn render_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str("# Search report\n\n");
         out.push_str(&format!("- Archive: `{}`\n", self.archive_display));
-        out.push_str(&format!("- Version index: {}\n", self.version_index));
-        out.push_str(&format!(
-            "- Version timestamp: {}\n\n",
-            self.version_ts.as_deref().unwrap_or("-")
-        ));
+        match &self.scope {
+            SearchScope::AllVersions => out.push_str("- Versions: all\n\n"),
+            SearchScope::Version { index, timestamp } => {
+                out.push_str(&format!("- Version index: {index}\n"));
+                out.push_str(&format!(
+                    "- Version timestamp: {}\n\n",
+                    timestamp.as_deref().unwrap_or("-")
+                ));
+            }
+        }
 
         for group in &self.groups {
             if group.matches.is_empty() {
                 continue;
             }
             out.push_str(&format!("## `{}`\n\n", group.file_name));
-            out.push_str("| Line | Col | Byte offset | Match |\n");
-            out.push_str("| ---- | --- | ----------- | ----- |\n");
-            for m in &group.matches {
-                out.push_str(&format!(
-                    "| {} | {} | {} | {} |\n",
-                    m.line,
-                    m.col,
-                    m.byte_offset,
-                    escape_cell(&m.matched_text)
-                ));
+            if self.scope == SearchScope::AllVersions {
+                let mut by_version = BTreeMap::<usize, Vec<&Match>>::new();
+                for matched in &group.matches {
+                    by_version
+                        .entry(matched.version_index)
+                        .or_default()
+                        .push(matched);
+                }
+                for (index, matches) in by_version {
+                    let timestamp = matches
+                        .first()
+                        .and_then(|matched| matched.version_ts.as_deref())
+                        .unwrap_or("-");
+                    out.push_str(&format!(
+                        "### Version index: {index} (timestamp: {timestamp})\n\n"
+                    ));
+                    render_markdown_table(&mut out, matches.iter().copied());
+                    out.push('\n');
+                }
+            } else {
+                render_markdown_table(&mut out, group.matches.iter());
+                out.push('\n');
             }
-            out.push('\n');
         }
 
         out.push_str(&format!(
@@ -120,25 +139,38 @@ impl SearchReport {
     }
 
     /// Render a plain-text report with no Markdown table syntax, for piping:
-    /// one `file:line:col:offset:match` line per match, then a summary line.
+    /// one located-match line per match, then a summary line.
     fn render_plain(&self) -> String {
-        let mut out = String::new();
-        out.push_str(&format!(
-            "archive {} version {} ts {}\n",
-            self.archive_display,
-            self.version_index,
-            self.version_ts.as_deref().unwrap_or("-")
-        ));
+        let mut out = match &self.scope {
+            SearchScope::AllVersions => format!("archive {} versions all\n", self.archive_display),
+            SearchScope::Version { index, timestamp } => format!(
+                "archive {} version {index} ts {}\n",
+                self.archive_display,
+                timestamp.as_deref().unwrap_or("-")
+            ),
+        };
         for group in &self.groups {
             for m in &group.matches {
-                out.push_str(&format!(
-                    "{}:{}:{}:{}:{}\n",
-                    group.file_name,
-                    m.line,
-                    m.col,
-                    m.byte_offset,
-                    m.matched_text.replace('\n', " ")
-                ));
+                if self.scope == SearchScope::AllVersions {
+                    out.push_str(&format!(
+                        "{}:{}:{}:{}:{}:{}\n",
+                        group.file_name,
+                        m.version_index,
+                        m.line,
+                        m.col,
+                        m.byte_offset,
+                        m.matched_text.replace('\n', " ")
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{}:{}:{}:{}:{}\n",
+                        group.file_name,
+                        m.line,
+                        m.col,
+                        m.byte_offset,
+                        m.matched_text.replace('\n', " ")
+                    ));
+                }
             }
         }
         out.push_str(&format!(
@@ -147,6 +179,20 @@ impl SearchReport {
             self.file_hit_count()
         ));
         out
+    }
+}
+
+fn render_markdown_table<'a>(out: &mut String, matches: impl IntoIterator<Item = &'a Match>) {
+    out.push_str("| Line | Col | Byte offset | Match |\n");
+    out.push_str("| ---- | --- | ----------- | ----- |\n");
+    for matched in matches {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            matched.line,
+            matched.col,
+            matched.byte_offset,
+            escape_cell(&matched.matched_text)
+        ));
     }
 }
 
@@ -178,8 +224,10 @@ mod tests {
     fn report() -> SearchReport {
         SearchReport {
             archive_display: "fixture.wal".to_string(),
-            version_index: 0,
-            version_ts: Some("2026-10-11T16:18:44Z".to_string()),
+            scope: SearchScope::Version {
+                index: 0,
+                timestamp: Some("2026-10-11T16:18:44Z".to_string()),
+            },
             groups: vec![FileGroup {
                 file_name: "notes.txt".to_string(),
                 matches: vec![one_match(
@@ -231,8 +279,10 @@ mod tests {
     fn match_and_file_counts_span_every_group() {
         let r = SearchReport {
             archive_display: "a.wal".to_string(),
-            version_index: 0,
-            version_ts: None,
+            scope: SearchScope::Version {
+                index: 0,
+                timestamp: None,
+            },
             groups: vec![
                 FileGroup {
                     file_name: "a.txt".to_string(),
@@ -249,5 +299,33 @@ mod tests {
         };
         assert_eq!(r.match_count(), 2);
         assert_eq!(r.file_hit_count(), 1);
+    }
+
+    #[test]
+    fn all_versions_markdown_groups_hits_by_index_and_timestamp() {
+        let r = SearchReport {
+            archive_display: "a.wal".to_string(),
+            scope: SearchScope::AllVersions,
+            groups: vec![FileGroup {
+                file_name: "a.txt".to_string(),
+                matches: vec![
+                    one_match("a.txt", 0, Some("2026-10-11T00:00:00Z"), "x"),
+                    one_match("a.txt", 2, None, "x"),
+                ],
+            }],
+        };
+        let markdown = r.render(OutputFormat::Markdown);
+        assert!(markdown.contains("- Versions: all"));
+        assert!(markdown.contains("### Version index: 0 (timestamp: 2026-10-11T00:00:00Z)"));
+        assert!(markdown.contains("### Version index: 2 (timestamp: -)"));
+    }
+
+    #[test]
+    fn all_versions_plain_output_includes_version_index() {
+        let mut r = report();
+        r.scope = SearchScope::AllVersions;
+        let plain = r.render(OutputFormat::Plain);
+        assert!(plain.contains("archive fixture.wal versions all"));
+        assert!(plain.contains("notes.txt:0:1:7:6:walrus"));
     }
 }

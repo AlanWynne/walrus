@@ -1,5 +1,5 @@
-//! `search`: find a string in one version of selected tracked files and print
-//! a Markdown (default) or plain report (CLI-DESIGN 5.6).
+//! `search`: find a string in selected tracked files and print a Markdown
+//! (default) or plain report (CLI-DESIGN 5.8).
 //!
 //! Parsing only: the reconstruct-and-match engine, the return-code rules
 //! (0 found / 1 none / 4 beyond-last clamp), and the renderer live in the
@@ -24,12 +24,13 @@ pub fn run(tokens: &[String]) -> Result<u8> {
 }
 
 /// Parse `search` tokens into [`SearchArgs`]:
-/// `search <archive> <string> [file-mask] [selector] [-i] [--regex] [--format]`.
+/// `search <archive> <string> [file-mask] [selector] [--all-versions] [-i] [--regex] [--format]`.
 fn parse(tokens: &[String]) -> Result<SearchArgs, CliError> {
     let mut positionals: Vec<String> = Vec::new();
     let mut sel: Option<Selector> = None;
     let mut case_insensitive = false;
     let mut regex = false;
+    let mut all_versions = false;
     let mut format = OutputFormat::Markdown;
     let mut options_done = false;
     let mut iter = tokens.iter().peekable();
@@ -61,6 +62,7 @@ fn parse(tokens: &[String]) -> Result<SearchArgs, CliError> {
             "--label" => return Err(CliError::usage("--label is not supported yet")),
             "-i" | "--ignore-case" => case_insensitive = true,
             "--regex" => regex = true,
+            "--all-versions" => all_versions = true,
             "--format" => {
                 let value = take_value(name, inline, &mut iter)?;
                 format = parse_format(&value)?;
@@ -82,11 +84,17 @@ fn parse(tokens: &[String]) -> Result<SearchArgs, CliError> {
             "search takes at most <archive> <string> and one file-mask",
         ));
     }
+    if all_versions && sel.is_some() {
+        return Err(CliError::usage(
+            "--all-versions cannot be combined with a version selector",
+        ));
+    }
     Ok(SearchArgs {
         archive: PathBuf::from(archive),
         needle,
         mask,
         selector: selector::effective_selector(sel),
+        all_versions,
         case_insensitive,
         regex,
         format,

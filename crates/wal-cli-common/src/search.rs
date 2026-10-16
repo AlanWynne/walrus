@@ -1,21 +1,19 @@
-//! The shared `search` engine: find a string (literal or regex) in one version
-//! of every selected tracked file and render a report (CLI-DESIGN 5.6).
+//! The shared `search` engine: find a string (literal or regex) in selected
+//! tracked files and render a report (CLI-DESIGN 5.8).
 //!
 //! Both `walx` and `walrus` reuse this engine, so the subcommand behaves
-//! identically on both. Search is READ-ONLY: it reconstructs each selected
-//! file at the resolved version, runs the pure `walrus_fmt` matcher over the
-//! bytes, and renders the results. The data model is version-agnostic (see
-//! [`crate::search_render`]), so the all-versions follow-up composes without a
-//! redesign; only the single-version path is wired here.
+//! identically on both. Search is READ-ONLY: it reconstructs the selected
+//! version or complete history, runs the pure `walrus_fmt` matcher over the
+//! bytes, and renders the results.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use walrus_fmt::{Archive, Direction, FileId, MatchMode, SearchOptions};
+use walrus_fmt::{Archive, Direction, FileId, MatchMode, SearchOptions, Version};
 
 use crate::extract::reconstruct_with_fallback;
 use crate::names;
-use crate::search_render::{FileGroup, OutputFormat, SearchReport};
+use crate::search_render::{FileGroup, OutputFormat, SearchReport, SearchScope};
 use crate::selector::Selector;
 
 /// Parsed inputs for one `search` invocation.
@@ -28,6 +26,8 @@ pub struct SearchArgs {
     pub mask: Option<String>,
     /// Version selector resolved per file (default: current / index 0).
     pub selector: Selector,
+    /// Search every version, instead of the selected version.
+    pub all_versions: bool,
     /// Fold case when matching (`-i` / `--ignore-case`).
     pub case_insensitive: bool,
     /// Treat `needle` as a regular expression (`--regex`).
@@ -60,30 +60,45 @@ pub fn run(args: &SearchArgs) -> Result<u8> {
     opts.mode = match_mode(args.regex);
     opts.case_insensitive = args.case_insensitive;
 
+    #[cfg(feature = "search-regex")]
+    if args.regex {
+        walrus_fmt::search_version("", 0, None, &[], &args.needle, &opts)
+            .context("validating search pattern")?;
+    }
+
     let mut groups = Vec::with_capacity(selected.len());
     let mut worst: u8 = 0;
-    // Every selected file shares the same selector, so the resolved index and
-    // its timestamp reported in the header are read from the first searched
-    // file; per-match facts still ride on each Match for the all-versions seam.
+    // Every selected file shares the selector, so the first file supplies the
+    // single-version header metadata.
     let mut header_index = 0usize;
     let mut header_ts: Option<String> = None;
     let mut header_set = false;
 
     for name in &selected {
-        let (group, index, ts, code) = search_one(&archive, name, args, &opts)?;
-        worst = worst.max(code);
-        if !header_set {
-            header_index = index;
-            header_ts = ts;
-            header_set = true;
+        if args.all_versions {
+            groups.push(search_all_versions(&archive, name, args, &opts)?);
+        } else {
+            let (group, index, ts, code) = search_one(&archive, name, args, &opts)?;
+            worst = worst.max(code);
+            if !header_set {
+                header_index = index;
+                header_ts = ts;
+                header_set = true;
+            }
+            groups.push(group);
         }
-        groups.push(group);
     }
 
     let report = SearchReport {
         archive_display: args.archive.display().to_string(),
-        version_index: header_index,
-        version_ts: header_ts,
+        scope: if args.all_versions {
+            SearchScope::AllVersions
+        } else {
+            SearchScope::Version {
+                index: header_index,
+                timestamp: header_ts,
+            }
+        },
         groups,
     };
 
@@ -98,6 +113,36 @@ pub fn run(args: &SearchArgs) -> Result<u8> {
     } else {
         Ok(1)
     }
+}
+
+/// Search all versions of one tracked file, from current index 0 to original.
+fn search_all_versions(
+    archive: &Archive,
+    name: &str,
+    args: &SearchArgs,
+    opts: &SearchOptions,
+) -> Result<FileGroup> {
+    let tracked = archive
+        .file(name)
+        .with_context(|| format!("tracked file '{name}' vanished from the manifest"))?;
+    let file_id = FileId::from(tracked.id.as_str());
+    let count = splice_count(archive, name);
+
+    let matches = walrus_fmt::search_versions(
+        name,
+        (0..=count).map(|index| {
+            let bytes = archive.reconstruct(&file_id, Version::Index(index))?;
+            Ok((index, version_ts(archive, name, index, count), bytes))
+        }),
+        &args.needle,
+        opts,
+    )
+    .with_context(|| format!("searching all versions of '{name}'"))?;
+
+    Ok(FileGroup {
+        file_name: name.to_string(),
+        matches,
+    })
 }
 
 /// Search ONE tracked file at the resolved version, returning its match group,
@@ -285,6 +330,7 @@ mod tests {
             needle: needle.to_string(),
             mask: None,
             selector: Selector::Current,
+            all_versions: false,
             case_insensitive: false,
             regex: false,
             format: OutputFormat::Markdown,

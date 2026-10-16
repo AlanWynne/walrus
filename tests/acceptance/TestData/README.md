@@ -16,7 +16,7 @@ different lenses on the same binary.
 
 | File | Platform | Role |
 | ---- | -------- | ---- |
-| `WalrusTestHarness.bat` | Windows (cmd) | The 19-step harness. |
+| `WalrusTestHarness.bat` | Windows (cmd) | The 22-step harness. |
 | `WalrusTestHarness.sh`  | Linux / macOS (bash) | Faithful bash port of the same steps. |
 | `compareDir.bat` | Windows (cmd) | Byte-compare two directory trees. |
 | `compareDir.sh`  | Linux / macOS (bash) | Bash port of the comparator. |
@@ -64,9 +64,9 @@ The scratch area is a dedicated `Walrus-TestData` subfolder *under*
 `C:\workspace\temp` (not `C:\workspace\temp` itself), so the step-1 wipe only
 ever removes the harness's own scratch and never any sibling content there.
 
-The `.bat` hard-codes its paths at the top (`set` lines); edit those if your
-checkout is elsewhere. The `.sh` reads the overrides from the environment and
-infers `REPO` from its own location.
+Both scripts accept these environment overrides. The Windows defaults preserve
+the historical checkout path; the Unix script infers the repository root from
+its own location.
 
 ## Output
 
@@ -101,6 +101,9 @@ in stdout; the report states what to confirm.
 | 17   | Adding a directory without `-R` is refused (RC 2). |
 | 18   | Querying a missing archive fails cleanly (non-zero RC, no crash). |
 | 19   | Runs the Python acceptance suite + TCR (skipped if python absent). |
+| 20   | Adds a quoted `*.md` pattern and checks that the CLI expands it to three names. |
+| 21   | Search found/no-match/case-insensitive outcomes (RC 0/1/0). |
+| 22   | All-versions search reports current and original matches for both `.wal` and converted `.wbl` archives, and rejects a selector (RC 2). |
 
 ## Notes / gotchas baked into the scripts
 

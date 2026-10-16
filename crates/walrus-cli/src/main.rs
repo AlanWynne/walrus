@@ -45,8 +45,8 @@ fn main() -> ExitCode {
 /// printing a `walrus:`-prefixed diagnostic to stderr.
 ///
 /// A typed [`CliError`] carries its own code; a [`WalrusError`] maps per the
-/// typed-error table (NotTracked -> 8, AmbiguousRemove -> 2, everything else a
-/// general failure RC 1); anything else is RC 1.
+/// typed-error table (NotTracked -> 8; AmbiguousRemove and SearchPattern -> 2);
+/// anything else is RC 1.
 fn map_error(e: &anyhow::Error) -> u8 {
     if let Some(cli) = e.downcast_ref::<CliError>() {
         eprintln!("walrus: {}", cli.message);
@@ -65,10 +65,9 @@ fn map_error(e: &anyhow::Error) -> u8 {
 fn rc_for_walrus_error(e: &WalrusError) -> u8 {
     match e {
         WalrusError::NotTracked { .. } => 8,
-        WalrusError::AmbiguousRemove { .. } => 2,
-        // BinaryInput, SpliceNotCharBoundary, InvalidTimestamp, and every other
-        // variant are general failures (non-zero RC 1); the batch is aborted
-        // transactionally by not writing (CLI-DESIGN 5.4a).
+        WalrusError::AmbiguousRemove { .. } | WalrusError::SearchPattern(_) => 2,
+        // SearchPattern is a usage error. Other variants are general failures
+        // (non-zero RC 1); mutation batches abort by not writing (5.4a).
         _ => 1,
     }
 }

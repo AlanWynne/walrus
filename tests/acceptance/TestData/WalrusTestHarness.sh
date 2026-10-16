@@ -324,6 +324,53 @@ echo " After : $WALRUS search $WORK0000.wal WALRUS -i   (case-folded hit)"
 echo " Return code: $RC21C   Expectation: 0 (found via -i)"
 report "$RC21C" 0 "STEP 21c" "case-insensitive search matches a mixed-case needle" "RC 0 (found)"
 
+# -- 22. All-versions search over a known two-version archive ----------------
+# Use a dedicated scratch archive so the searched token is guaranteed to exist
+# in both the current and original versions.
+ALLVERSIONSSRC="$TEMPDIR/allversions-source"
+ALLVERSIONSARCHIVE="$TEMPDIR/allversions.wal"
+mkdir -p "$ALLVERSIONSSRC"
+printf 'search-version-probe\n' > "$ALLVERSIONSSRC/probe.txt"
+"$WALRUS" add "$ALLVERSIONSARCHIVE" "$ALLVERSIONSSRC/probe.txt" --wal > "$TEMPDIR/allversions-add.log" 2>&1
+RC22A=$?
+report "$RC22A" 0 "STEP 22a" "create all-versions search fixture" "RC 0"
+printf 'search-version-probe revised\n' > "$ALLVERSIONSSRC/probe.txt"
+"$WALRUS" update "$ALLVERSIONSARCHIVE" "$ALLVERSIONSSRC/probe.txt" > "$TEMPDIR/allversions-update.log" 2>&1
+RC22B=$?
+report "$RC22B" 0 "STEP 22b" "add a second fixture version" "RC 0"
+
+echo
+echo "[STEP 22] Search every version: expect matches at index 0 and index 1"
+"$WALRUS" search "$ALLVERSIONSARCHIVE" search-version-probe --all-versions > "$TEMPDIR/allversions-search.log" 2>&1
+RC22C=$?
+report "$RC22C" 0 "STEP 22c" "all-versions search finds history matches" "RC 0"
+grep -F -q "Versions: all" "$TEMPDIR/allversions-search.log"
+RC22D=$?
+report "$RC22D" 0 "STEP 22d" "all-versions report identifies its scope" "Versions all"
+grep -F -q "Version index: 0" "$TEMPDIR/allversions-search.log"
+RC22E=$?
+report "$RC22E" 0 "STEP 22e" "all-versions report includes current version" "index 0"
+grep -F -q "Version index: 1" "$TEMPDIR/allversions-search.log"
+RC22F=$?
+report "$RC22F" 0 "STEP 22f" "all-versions report includes original version" "index 1"
+
+"$WALRUS" search "$ALLVERSIONSARCHIVE" search-version-probe --all-versions --index 0 > "$TEMPDIR/allversions-selector.log" 2>&1
+RC22G=$?
+report "$RC22G" 2 "STEP 22g" "all-versions rejects a version selector" "RC 2"
+
+"$WALRUS" convert "$ALLVERSIONSARCHIVE" --to wbl -o "$TEMPDIR/allversions.wbl" > "$TEMPDIR/allversions-convert.log" 2>&1
+RC22H=$?
+report "$RC22H" 0 "STEP 22h" "convert the fixture to reverse-log form" "RC 0"
+"$WALRUS" search "$TEMPDIR/allversions.wbl" search-version-probe --all-versions > "$TEMPDIR/allversions-wbl-search.log" 2>&1
+RC22I=$?
+report "$RC22I" 0 "STEP 22i" "all-versions search works on a reverse-log archive" "RC 0"
+grep -F -q "Version index: 0" "$TEMPDIR/allversions-wbl-search.log"
+RC22J=$?
+report "$RC22J" 0 "STEP 22j" "reverse-log report includes current version" "index 0"
+grep -F -q "Version index: 1" "$TEMPDIR/allversions-wbl-search.log"
+RC22K=$?
+report "$RC22K" 0 "STEP 22k" "reverse-log report includes original version" "index 1"
+
 # -- 90. Report summary ----------------------------------------------------
 echo
 echo "============================================================"

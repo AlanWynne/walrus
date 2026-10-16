@@ -129,3 +129,118 @@ fn search_regex_flag_matches_pattern() {
     let output = run_walx(fx.dir.path(), &["search", archive, "ca.s", "--regex"]);
     assert_eq!(code_of(&output), 0, "the pattern 'ca.s' matches 'cats'");
 }
+
+#[test]
+fn search_all_versions_reports_each_matching_index() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walx(fx.dir.path(), &["search", archive, "cat", "--all-versions"]);
+    assert_eq!(code_of(&output), 0);
+    let out = stdout_of(&output);
+    assert!(out.contains("- Versions: all"), "{out}");
+    for index in 0..=2 {
+        assert!(
+            out.contains(&format!("Version index: {index}")),
+            "missing version {index} in report:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn search_all_versions_omits_versions_without_matches() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walx(fx.dir.path(), &["search", archive, "the", "--all-versions"]);
+    assert_eq!(code_of(&output), 0);
+    let out = stdout_of(&output);
+    assert!(out.contains("Version index: 0"), "{out}");
+    assert!(!out.contains("Version index: 1"), "{out}");
+    assert!(!out.contains("Version index: 2"), "{out}");
+    assert!(out.contains("1 match(es) in 1 file(s)"), "{out}");
+}
+
+#[test]
+fn search_all_versions_with_no_hits_exits_one() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walx(
+        fx.dir.path(),
+        &["search", archive, "penguin", "--all-versions"],
+    );
+    assert_eq!(code_of(&output), 1);
+    assert!(stdout_of(&output).contains("0 match(es) in 0 file(s)"));
+}
+
+#[test]
+fn search_all_versions_plain_format_prefixes_each_match_with_its_index() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walx(
+        fx.dir.path(),
+        &[
+            "search",
+            archive,
+            "cat",
+            "--all-versions",
+            "--format",
+            "plain",
+        ],
+    );
+    assert_eq!(code_of(&output), 0);
+    let out = stdout_of(&output);
+    assert!(out.contains(" versions all\n"), "{out}");
+    for index in 0..=2 {
+        assert!(
+            out.contains(&format!("notes.txt:{index}:")),
+            "plain output omitted version {index}:\n{out}"
+        );
+    }
+    assert!(!out.contains("| Line |"), "{out}");
+}
+
+#[test]
+fn search_all_versions_respects_the_file_mask() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let hit = run_walx(
+        fx.dir.path(),
+        &["search", archive, "cat", "notes.txt", "--all-versions"],
+    );
+    assert_eq!(code_of(&hit), 0);
+    assert!(stdout_of(&hit).contains("notes.txt"));
+
+    let miss = run_walx(
+        fx.dir.path(),
+        &["search", archive, "cat", "src/main.rs", "--all-versions"],
+    );
+    assert_eq!(code_of(&miss), 1);
+
+    let single_version = run_walx(
+        fx.dir.path(),
+        &["search", archive, "fn", "src/main.rs", "--all-versions"],
+    );
+    assert_eq!(code_of(&single_version), 0);
+    assert!(stdout_of(&single_version).contains("Version index: 0"));
+}
+
+#[test]
+fn search_all_versions_rejects_a_version_selector_rc2() {
+    let fx = Fixture::build();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walx(
+        fx.dir.path(),
+        &["search", archive, "cat", "--all-versions", "--index", "0"],
+    );
+    assert_eq!(code_of(&output), 2);
+}
+
+#[test]
+fn search_all_versions_validates_regex_even_without_selected_files_rc2() {
+    let fx = Fixture::empty();
+    let archive = fx.archive.to_str().expect("archive path");
+    let output = run_walx(
+        fx.dir.path(),
+        &["search", archive, "(", "--regex", "--all-versions"],
+    );
+    assert_eq!(code_of(&output), 2);
+}
