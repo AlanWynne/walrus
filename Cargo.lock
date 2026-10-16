@@ -4416,6 +4416,7 @@ dependencies = [
  "serde_json",
  "tar",
  "tempfile",
+ "walker",
  "walrus-fmt",
  "zstd",
 ]

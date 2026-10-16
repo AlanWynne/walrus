@@ -33,14 +33,66 @@ progress", gather INDEPENDENT evidence that it is alive and advancing:
    - For a background shell process: read its recent output
      (`get_process_output`) and confirm NEW lines have appeared since last time;
      an unchanging tail is not progress.
+   - The standard tool for this is the liveness-probe script (see "The
+     liveness-probe script" below): one invocation prints a NOW clock, the
+     newest write per bucket with its age, the latest git commit, and a one-word
+     VERDICT (ALIVE / SLOWING / STALLED). Use it first; it does steps 1-2 in one
+     shot and works even when the terminal is flaky.
 2. **Establish a reasonable-duration baseline.** Note how long comparable steps
    took earlier in the same run (e.g. the first design review finished in about
-   a minute). If the current step has run many multiples of that with no new
-   output, treat it as suspect, not healthy.
+   a minute). Pass that as the probe's `-StaleSeconds` so its verdict reflects
+   the right baseline; without the probe, if the current step has run many
+   multiples of that baseline with no new output, treat it as suspect, not
+   healthy.
 3. **Cross-check the tracker against the filesystem.** When the orchestrator says
    "running" but no artifact has changed in a span that dwarfs the baseline, the
    tracker is almost certainly stale (a dead/orphaned session the system has not
    noticed). Trust the filesystem evidence over the status string.
+
+## The liveness-probe script (run this first)
+
+`tools\powershell\liveness-probe.ps1` is the standard liveness check. Point it
+at the directory a background activity writes to (a worktree root, the main
+workspace, a task dir); it scans recursively and prints a report that already
+does the step-1 and step-2 reasoning for you:
+- a one-word VERDICT (ALIVE / SLOWING / STALLED) with the reason;
+- the newest write in each of three buckets so build churn never masks the real
+  signal: WORK (source/docs/tasks/config), GATE (the `.gate\` workflow logs),
+  BUILD (`target\` compiler output -- shown but NOT a liveness signal on its own);
+- the latest git commit (hash, time, subject), and a note when WORK is newer
+  than the last commit -- the "produced output but has not committed yet" stall
+  shape this project keeps hitting;
+- the top N recent files per bucket, with mtimes and ages.
+It writes the same report to a timestamped log under `<root>\tools\logs\` and
+echoes it to the terminal.
+
+Prefer it over ad-hoc `Get-ChildItem | Sort-Object` one-liners: it is a single
+simple invocation (no `;`-chaining, no inline `$(...)`), so it does not trip the
+terminal mangling described in the shell-and-gate steering, never fails to
+format a path, and even if the terminal swallows stdout the log on disk still
+holds the answer. The owner can run it themselves for a quick check.
+
+Run it (one command, its own invocation; absolute script path is cwd-safe):
+```
+pwsh -NoProfile -NonInteractive -File C:\workspace\Walrus\tools\powershell\liveness-probe.ps1 -Path .worktrees\<name>
+```
+- `-Path` directory to scan (default: current directory).
+- `-StaleSeconds` the liveness threshold (default 180). SET IT TO THE STEP's
+  baseline (step 2): a quick model step ~60, a build+test+review loop 300+.
+- `-Top` recent files listed per bucket (default 10).
+- `-NoGit` skip the commit check when `-Path` is not inside a repo.
+
+The VERDICT IS the baseline comparison, so read it directly:
+- ALIVE (newest WORK/GATE write <= threshold): actively writing -- report it as
+  alive, citing the age the probe prints.
+- SLOWING (<= 2x threshold): quiet; may be mid build/review. Do not call it
+  either way -- re-probe once after a short interval before deciding.
+- STALLED (> 2x threshold, or no WORK/GATE files at all): treat as hung or
+  agent-restart-paused. Cross-check the tracker (step 3) and RECOVER per the
+  rules below -- do NOT keep re-probing.
+The exit code mirrors the verdict (0 ALIVE, 3 SLOWING, 4 STALLED) so the probe
+can gate a script. It only reports; it never commits or resumes -- act on its
+evidence per the recovery rules.
 
 ## Reporting rules
 

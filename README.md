@@ -33,9 +33,11 @@ Design decisions (CLI shape, multi-file layout, generations, diff, i18n, the
 GUI frontend) are recorded in [`CLI-DESIGN.md`](CLI-DESIGN.md), and the current
 build state is in [`ROADMAP.md`](ROADMAP.md).
 
-> Status: a format-breaking MULTI-FILE revision is in progress. `FORMAT.md` and
-> `CLI-DESIGN.md` describe the target; the implementation is mid-migration from
-> the earlier single-file scaffold. See `ROADMAP.md` for what is done vs pending.
+> Status: the format-breaking MULTI-FILE revision is DONE. The library
+> (`walrus-fmt`), both CLIs (`walrus`, `walx`), and the `walker` GUI all use the
+> multi-file format described in `FORMAT.md` and `CLI-DESIGN.md`. The project is
+> pre-1.0 (the format is a 0.1 draft). See `ROADMAP.md` for the current state and
+> the forward plan.
 
 ## The walrus demo
 
@@ -47,8 +49,9 @@ It exercises the forward/reverse log, the player, loop, and speed control, and
 doubles as a deterministic playback test (forward-then-backward must reconstruct
 byte-identical frames).
 
-(The committed fixtures are from the single-file scaffold and will be regenerated
-for the multi-file format during the re-work -- see `ROADMAP.md`.)
+(The committed example fixtures under `examples/` are generated for the
+multi-file format by the `generate_*` example programs in
+`crates/walrus/examples/`.)
 
 ## Why two variants
 
@@ -67,20 +70,24 @@ walrus-fmt = { git = "https://github.com/AlanWynne/walrus" }
 ```
 
 ```rust
-use walrus_fmt::{WalrusFile, Version};
+use walrus_fmt::{Archive, FileId, Version};
 
-let archive = WalrusFile::open("report.wbl")?;  // decompress + read manifest
-for file in archive.files() {                   // many tracked files per archive
-    println!("{}: {} versions", file.name(), file.index_size());
+let archive = Archive::open("report.wbl")?;      // decompress + read manifest
+for file in archive.files() {                    // many tracked files per archive
+    // `count` is the number of change records; indices 0..=count are selectable.
+    println!("{}: {} versions", file.name, file.versions.count + 1);
 }
-// Reconstruct a specific version of a specific tracked file.
-// Index 0 is the CURRENT version; higher indices are older.
-let current = archive.reconstruct("report.md", Version::Index(0))?;
-let older   = archive.reconstruct("report.md", Version::Index(5))?;
+
+// Reconstruct a specific version of a specific tracked file, addressed by its
+// stable FileId. Index 0 is the CURRENT version; higher indices are older.
+let id = FileId::from("f0");
+let current = archive.reconstruct(&id, Version::Index(0))?;
+let older   = archive.reconstruct(&id, Version::Index(5))?;
 ```
 
-(API names are illustrative; the multi-file surface is being implemented -- see
-`ROADMAP.md`.)
+A tracked file's `FileId` is its `id` field (e.g. `FileId::from(file.id.as_str())`);
+`Archive::file(name_or_id)` looks one up by name or id. See
+`crates/walker/tests/integration.rs` for a complete, compiling example.
 
 Export formats (PDF, DOCX, HTML, Markdown, CSV, JSON, plain text) are behind
 optional cargo features so a playback-only embedder stays lean:
@@ -120,8 +127,8 @@ at your option.
 
 ## Status
 
-Pre-1.0, mid-migration. The format in `FORMAT.md` is a 0.1 draft; a
-format-breaking MULTI-FILE revision is the current target (recorded in
-`FORMAT.md` and `CLI-DESIGN.md`), and the implementation is migrating to it from
-the earlier single-file scaffold. See `ROADMAP.md` for the honest done-vs-pending
-state and the ordered re-work sequence.
+Pre-1.0. The format in `FORMAT.md` is a 0.1 draft. The multi-file format,
+reconstruct engine, mutate/diff surface, search, both CLIs, and the `walker` GUI
+are all implemented and on `main`. See `ROADMAP.md` for the current state and the
+prioritized forward plan (remaining items are coverage, hygiene, and optional
+features -- no known defects block a release).

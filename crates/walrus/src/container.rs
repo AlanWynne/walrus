@@ -46,9 +46,7 @@ pub(crate) fn decompress(bytes: &[u8]) -> Result<Vec<u8>> {
         // gzip support is intentionally deferred: the `flate2` dependency is not
         // yet wired. Writers default to zstd, so this only affects foreign gzip
         // inputs. Tracked in FORMAT.md section 2.
-        Codec::Gzip => Err(WalrusError::Manifest(
-            "gzip containers are not yet supported by this build (use zstd)".to_string(),
-        )),
+        Codec::Gzip => Err(WalrusError::UnsupportedCodec { codec: "gzip" }),
     }
 }
 
@@ -137,6 +135,16 @@ mod tests {
     #[test]
     fn sniffs_gzip_magic() {
         assert_eq!(sniff_codec(&[0x1F, 0x8B, 0x00]).unwrap(), Codec::Gzip);
+    }
+
+    #[test]
+    fn gzip_codec_is_reported_as_unsupported() {
+        let err = decompress(&[0x1F, 0x8B, 0x00]).expect_err("gzip decode is not built in");
+        assert!(matches!(
+            &err,
+            WalrusError::UnsupportedCodec { codec: "gzip" }
+        ));
+        assert_eq!(err.to_string(), "unsupported container codec: gzip");
     }
 
     #[test]

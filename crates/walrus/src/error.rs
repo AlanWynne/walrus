@@ -17,6 +17,13 @@ pub enum WalrusError {
     #[error("unrecognised container codec (expected zstd or gzip magic)")]
     UnknownCodec,
 
+    /// The container codec was recognised but is not supported by this build.
+    #[error("unsupported container codec: {codec}")]
+    UnsupportedCodec {
+        /// The recognised codec identifier.
+        codec: &'static str,
+    },
+
     /// A required tar member was missing.
     #[error("missing required container member: {0}")]
     MissingMember(&'static str),

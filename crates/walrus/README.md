@@ -17,14 +17,20 @@ surface (add/update/remove/condense/convert). Export formats are opt-in cargo
 features; content transformation otherwise lives in the `walker` GUI.
 
 ```rust
-use walrus_fmt::{WalrusFile, Version};
+use walrus_fmt::{Archive, FileId, Version};
 
-let archive = WalrusFile::open("report.wbl")?;
-let current = archive.reconstruct("report.md", Version::Index(0))?; // index 0 = current
+// Open a multi-file archive (`.wal` or `.wbl`; the codec is sniffed from the
+// magic bytes, the extension only selects the variant).
+let archive = Archive::open("report.wbl")?;
+
+// Each tracked file carries a stable, filesystem-safe id plus its name/mime.
+let file = archive.files().next().expect("the archive tracks a file").clone();
+
+// Reconstruct a version by the file's id. Index 0 is the CURRENT version;
+// higher indices are older, up to the original.
+let current = archive.reconstruct(&FileId::from(file.id.as_str()), Version::Index(0))?;
+println!("{} is {} bytes at the current version", file.name, current.len());
 ```
-
-(API names are illustrative; the multi-file surface is being implemented -- see
-`../../ROADMAP.md`. A format-breaking multi-file revision is in progress.)
 
 Published as `walrus-fmt` because the crates.io name `walrus` is taken by an
 unrelated crate.

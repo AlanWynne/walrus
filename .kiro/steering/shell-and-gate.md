@@ -18,6 +18,11 @@ here).
   still fully present above it, and occasionally swallows stdout entirely.
 - A `-1` exit code is therefore NOT proof of failure, and a clean exit code is
   NOT proof of success. The printed output is the authority.
+- The GLOBAL `shell-exit-code` steering rule (user-level) gives the actionable
+  technique: append `; $rc=$LASTEXITCODE; Write-Output "KIRO_COMMAND_FINISHED
+  rc=$rc"` to any command whose status matters and trust the printed
+  `KIRO_COMMAND_FINISHED rc=<n>` marker over Kiro's reported `Exit Code: -1`.
+  Prefer that sentinel for pass/fail gates here.
 
 ## Shell discipline -- prevent the mangling at the first command
 
@@ -26,6 +31,27 @@ For reading, finding, counting, or searching files, use `read_file`,
 `grep_search`, `list_directory`, `file_search`. Do NOT reach for `Get-Content`,
 `Select-String`, `Get-ChildItem`, or `Measure-Object`. Most inspection never
 needs the terminal at all, and the dedicated tools never mangle output.
+
+### HARD RULE: line-count / 400-line-cap checks never go through a chained shell command
+The 400-non-test-line cap check (NFR-1) is the single most common reason an
+agent reaches for a `foreach`/`$(...)`/`;`-chained PowerShell one-liner. DO NOT.
+Those multi-statement, inline-subexpression commands do not match the command-
+approval allowlist, so EVERY ONE triggers an interactive permission prompt for
+the user -- a real, repeated interruption -- even though the command only reads
+files. This is forbidden regardless of the command being read-only.
+
+To measure a file's non-test line count, do ONE of these instead:
+- `read_file` the file (or `grep_search` for `^#\[cfg\(test\)\]` to find where
+  the test module starts) and reason about the count directly -- no shell at all.
+  This is the DEFAULT and needs no approval.
+- If you must use the shell, run ONE simple, un-chained command whose output you
+  read back, e.g. a single `grep_search`/`rg` for the `#[cfg(test)]` line number.
+  NEVER a `foreach` loop, NEVER inline `$( ... )`/arithmetic, NEVER `;`-chained
+  statements, NEVER `Select-String | Select-Object` pipelines on one line.
+
+A read-only command can still cost the user a prompt purely because of its
+SHAPE. Keep shell commands to the simple, single-job form the allowlist
+recognises; push all counting/searching/reading to the dedicated tools.
 
 ### One command, one job
 - NEVER `;`-chain unrelated steps onto a real command. Chaining is a primary

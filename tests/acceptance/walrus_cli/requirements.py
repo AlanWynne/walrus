@@ -114,6 +114,24 @@ REGISTRY: dict[str, str] = {
     "CLI-DESIGN-6a-utc-stamp": "--at works on a CLI-produced archive (AC8 proof)",
     "CLI-DESIGN-5-deep-history": "deep single-file history (~50 mixed-size "
     "versions) restores byte-exact at every index via --index/--version/--at",
+    # --- search (CLI-DESIGN 5.6 search; shared engine, walrus + walx) -----
+    "CLI-DESIGN-5.6-search-found": "a literal match prints a Markdown report "
+    "(archive/index/timestamp header + Line/Col/Byte-offset/Match table) and RC 0",
+    "CLI-DESIGN-5.6-search-nomatch": "a valid zero-hit search -> RC 1 (grep "
+    "convention; search-specific no-match code)",
+    "CLI-DESIGN-5.6-search-ignore-case": "-i/--ignore-case matches mixed case; "
+    "case-sensitive search of the same needle finds nothing",
+    "CLI-DESIGN-5.6-search-plain": "--format plain omits the Markdown table and "
+    "lists file:line hits",
+    "CLI-DESIGN-5.6-search-mask": "a file-mask restricts the search to matching "
+    "tracked files",
+    "CLI-DESIGN-5.6-search-selector": "a version selector searches that version; "
+    "two selectors -> RC 2",
+    "CLI-DESIGN-5.6-search-beyond-last": "a numeric index beyond the last version "
+    "clamps and exits RC 4",
+    "CLI-DESIGN-5.6-search-regex": "--regex matches a pattern (search-regex "
+    "feature enabled in the CLI binaries)",
+    "CLI-DESIGN-6-rc1": "at least one RC 1 case (search no-match)",
 }
 
 

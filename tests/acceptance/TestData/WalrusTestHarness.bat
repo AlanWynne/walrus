@@ -13,16 +13,20 @@ rem lands under <work>\Base and each compare targets that sub-path.
 rem ============================================================================
 
 rem -- 0. Paths --------------------------------------------------------------
-set "REPO=C:\workspace\Walrus"
-set "TEMPDIR=C:\workspace\Walrus-Temp-TestData"
-set "BASE=C:\workspace\Walrus-Temp-TestData\Base"
-set "WORK0000=C:\workspace\Walrus-Temp-TestData\Work0000"
-set "WORK0001=C:\workspace\Walrus-Temp-TestData\Work0001"
-set "WORK0002=C:\workspace\Walrus-Temp-TestData\Work0002"
-set "WORK0003=C:\workspace\Walrus-Temp-TestData\Work0003"
-set "WORK0004=C:\workspace\Walrus-Temp-TestData\Work0004"
+rem      TEMPDIR is the scratch work area (wiped and recreated each run). It is
+rem      a DEDICATED subfolder under C:\workspace\temp -- not C:\workspace\temp
+rem      itself -- so the step-1 rmdir /S /Q only ever removes this harness's
+rem      own scratch, never any sibling content under C:\workspace\temp.
+set "REPO=C:\workspace\apps\Walrus"
+set "TEMPDIR=C:\workspace\temp\Walrus-TestData"
+set "BASE=%TEMPDIR%\Base"
+set "WORK0000=%TEMPDIR%\Work0000"
+set "WORK0001=%TEMPDIR%\Work0001"
+set "WORK0002=%TEMPDIR%\Work0002"
+set "WORK0003=%TEMPDIR%\Work0003"
+set "WORK0004=%TEMPDIR%\Work0004"
 
-set "WALRUS=C:\workspace\Walrus\target\debug\walrus.exe"
+set "WALRUS=%REPO%\target\debug\walrus.exe"
 set "REPORT=%REPO%\.gate\tcr\WalrusTestHarness-Report.md"
 
 rem -- 1. Cleanup before start -----------------------------------------------
@@ -370,6 +374,45 @@ echo " After : %WALRUS% add glob.wal *.md --wal   (literal pattern, cmd does not
 echo " add rc=%RC20%   stored names=%GLOBCOUNT%   Expectation: rc 0, 3 names"
 call :report %RC20% 0 "STEP 20a" "add with literal *.md pattern succeeds" "rc 0"
 call :report %GLOBCOUNT% 3 "STEP 20b" "wildcard *.md expands to exactly the 3 md files" "3 stored names"
+
+rem -- 21. Search: find a known string / no-match / case-insensitive ---------
+rem      search is READ-ONLY: reconstruct each selected file at the chosen
+rem      version and report where a string occurs. Exercised against the
+rem      pristine %WORK0000%.wal (the real .md/.rs source tree), which is
+rem      certain to contain the literal "walrus". RC table (CLI-DESIGN 5.6):
+rem      0 found, 1 no match, 2 usage. find /c /v "" is NOT used here; the
+rem      return code alone is the pass criterion so no cmd metacharacter leaks
+rem      into a :report description.
+
+echo.
+echo [STEP 21] Search: a known literal is found - RC 0
+"%WALRUS%" search "%WORK0000%.wal" walrus > "%TEMPDIR%\search-found.log" 2>&1
+set "RC21A=%ERRORLEVEL%"
+echo " After : %WALRUS% search %WORK0000%.wal walrus   (expect at least one hit)"
+echo " Return code: %RC21A%   Expectation: 0 (found)"
+call :report %RC21A% 0 "STEP 21a" "search finds a known literal string" "RC 0 (found)"
+
+rem The absent-needle is assembled from two halves at runtime so the literal
+rem token never appears in any tracked .md/.rs file (including this harness or
+rem the resume notes) -- otherwise STEP 2's robocopy would ingest it into the
+rem archive and the "no match" search would wrongly find it. Concatenating in
+rem cmd keeps the whole string out of the source tree.
+set "NEEDLE_A=qzx7"
+set "NEEDLE_B=k9vmwp"
+set "ABSENT=%NEEDLE_A%%NEEDLE_B%"
+echo [STEP 21] Search: a string that is absent - RC 1
+"%WALRUS%" search "%WORK0000%.wal" "%ABSENT%" > "%TEMPDIR%\search-none.log" 2>&1
+set "RC21B=%ERRORLEVEL%"
+echo " After : %WALRUS% search %WORK0000%.wal <runtime-assembled absent token>   (expect no hits)"
+echo " Return code: %RC21B%   Expectation: 1 (no match)"
+call :report %RC21B% 1 "STEP 21b" "search of an absent string reports no matches" "RC 1 (no match)"
+
+echo [STEP 21] Search: case-insensitive -i finds a mixed-case needle - RC 0
+"%WALRUS%" search "%WORK0000%.wal" WALRUS -i > "%TEMPDIR%\search-ci.log" 2>&1
+set "RC21C=%ERRORLEVEL%"
+echo " After : %WALRUS% search %WORK0000%.wal WALRUS -i   (case-folded hit)"
+echo " Return code: %RC21C%   Expectation: 0 (found via -i)"
+call :report %RC21C% 0 "STEP 21c" "case-insensitive search matches a mixed-case needle" "RC 0 (found)"
 
 rem -- 90. Report summary ----------------------------------------------------
 echo.

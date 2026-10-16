@@ -56,13 +56,17 @@ Both scripts honour the same overrides; defaults are shown.
 
 | Variable | Default (Windows) | Default (Unix) | Meaning |
 | -------- | ----------------- | -------------- | ------- |
-| `REPO`    | `C:\workspace\Walrus` | inferred from the script location | Repo root to copy source from. |
+| `REPO`    | `C:\workspace\apps\Walrus` | inferred from the script location | Repo root to copy source from. |
 | `WALRUS`  | `%REPO%\target\debug\walrus.exe` | `$REPO/target/debug/walrus` | Binary under test. |
-| `TEMPDIR` | `C:\workspace\Walrus-Temp-TestData` | `$TMPDIR/Walrus-Temp-TestData` | Scratch work area (wiped each run). |
+| `TEMPDIR` | `C:\workspace\temp\Walrus-TestData` | `/c/workspace/temp/Walrus-TestData` | Scratch work area (wiped each run). |
 
-The `.bat` currently hard-codes its paths at the top (`set` lines); edit those
-if your checkout is elsewhere. The `.sh` reads the overrides from the
-environment and infers `REPO` from its own location.
+The scratch area is a dedicated `Walrus-TestData` subfolder *under*
+`C:\workspace\temp` (not `C:\workspace\temp` itself), so the step-1 wipe only
+ever removes the harness's own scratch and never any sibling content there.
+
+The `.bat` hard-codes its paths at the top (`set` lines); edit those if your
+checkout is elsewhere. The `.sh` reads the overrides from the environment and
+infers `REPO` from its own location.
 
 ## Output
 

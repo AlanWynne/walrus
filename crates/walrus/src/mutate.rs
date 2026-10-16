@@ -65,8 +65,7 @@ impl Archive {
         if generations == 0 {
             return Ok(());
         }
-        // generations = N keeps N versions (indices [0, N-1]), i.e. keep = N-1
-        // surviving splice records. rebase_file's keep >= count is a no-op.
+        // generations = N keeps N versions (indices [0, N-1]).
         self.rebase_file(id, (generations as usize).saturating_sub(1))
     }
 
@@ -93,7 +92,7 @@ impl Archive {
         // Trim the per-file base/records in place via the pure core.
         let (new_base, new_records, dropped) = {
             let file = self.archive_file_mut(id)?;
-            rebase::trim_to(&file.base, &file.records, direction, keep)?
+            rebase::trim_to_versions(&file.base, &file.records, direction, keep.saturating_add(1))?
         };
         if dropped == 0 {
             // A no-op trim: do not record a re-base operation (D7).

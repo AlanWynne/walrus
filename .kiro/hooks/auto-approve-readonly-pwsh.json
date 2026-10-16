@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Auto-approve read-only pwsh commands",
+      "trigger": "PreToolUse",
+      "description": "Auto-approves genuinely read-only execute_pwsh commands (Get-Content/Select-String/line counts) so routine inspection does not interrupt the user; stays silent for anything that writes, deletes, or mutates git/build state, which still prompts normally.",
+      "matcher": "execute_pwsh",
+      "action": {
+        "type": "command",
+        "command": "pwsh -NoProfile -NonInteractive -File .kiro/hooks/auto-approve-readonly-pwsh.ps1",
+        "timeout": 15
+      }
+    }
+  ]
+}

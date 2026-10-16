@@ -346,5 +346,8 @@ fn gzip_outer_magic_errors_clearly_without_panicking() {
     // gzip magic 0x1F 0x8B is a documented deferral: a clear error, no panic.
     let gzip_like = [0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00];
     let err = walrus_fmt::Archive::read(&gzip_like).expect_err("gzip deferral errors");
-    assert!(matches!(err, WalrusError::Manifest(_)));
+    assert!(matches!(
+        err,
+        WalrusError::UnsupportedCodec { codec: "gzip" }
+    ));
 }

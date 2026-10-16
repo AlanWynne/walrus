@@ -2,110 +2,101 @@
 inclusion: always
 ---
 
-# Rust Coding Standards and File Structure
+# Rust Coding Standards and File Structure (FFWB)
 
-Apply to every Rust file in this workspace without being asked.
+Workspace-specific. Applies to the FileForgeWorkbench Rust workspace. Universal
+process rules live in user space (`workflow.md`, `testing.md`,
+`documentation-charset.md`); this file is the Rust-and-FFWB-layout detail.
+
+Apply to every Rust file without being asked. The requirements gate must be
+complete before any code is written; these standards apply once it is.
 
 ## Naming
 
 | Item | Convention | Example |
 |------|-----------|---------|
-| Types, traits, enums | `UpperCamelCase` | `WalrusFile` |
-| Functions, methods, variables | `snake_case` | `reconstruct_version` |
-| Constants | `SCREAMING_SNAKE_CASE` | `MAX_LOG_RECORDS` |
-| Modules | `snake_case` | `reconstruct` |
+| Types, traits, enums | `UpperCamelCase` | `DocumentSession` |
+| Functions, methods, variables | `snake_case` | `edit_line` |
+| Constants | `SCREAMING_SNAKE_CASE` | `MAX_LINE_WIDTH` |
+| Modules | `snake_case` | `file_engine` |
 
-- Prefer full names: `version_index` not `vi`.
-- Booleans read as predicates: `is_reverse_log`, `has_checkpoints`.
+- Prefer full names: `line_number` not `ln`.
+- Booleans read as predicates: `is_modified`, `has_pending_changes`.
 
-## Error Handling
-
-- Library code (`walrus-fmt`): `thiserror`, one `Error` enum per crate with
-  enough context. See `crates/walrus/src/error.rs`.
-- Application/binary code (`walx`, `walker`): `anyhow` with `.context("...")` on
-  every `?` crossing a module boundary.
-- Never `unwrap()` / `expect()` in library code. In tests, `expect("why")` over
+## Error handling
+- Library code: `thiserror`, one `Error` enum per crate with enough context.
+- Application/binary code: `anyhow` with `.context("...")` on every `?` crossing
+  a module boundary.
+- Never `unwrap()`/`expect()` in library code. In tests, `expect("why")` over
   `unwrap()`.
 - Never `panic!` except to enforce documented programmer-error invariants.
 - Never silently discard errors with `let _ = ...` without a comment.
 
-## Ownership and Borrowing
-
-- Prefer borrowing over cloning; comment any `clone()` in a hot loop (splice
-  replay is a hot loop).
+## Ownership and borrowing
+- Prefer borrowing over cloning; comment any `clone()` in a hot loop.
 - Prefer `&str` over `&String`, `&[T]` over `&Vec<T>` in signatures.
 - `Arc<T>` for cross-thread sharing; `Rc<T>` only single-threaded.
-- Hold any lock guard in the narrowest scope.
+- Hold `Mutex`/`RwLock` guards in the narrowest scope; never across `await` or a
+  blocking call.
 
-## Types and Data Modelling
-
-- Make illegal states unrepresentable with data-carrying enum variants (e.g. the
-  `Version` addressing enum, change-record `op` variants).
-- Newtypes over bare primitives where it clarifies intent (a version index, a
-  byte offset).
+## Types and data modelling
+- Make illegal states unrepresentable -- data-carrying enum variants.
+- Newtypes over bare primitives: `struct LineNumber(usize)`.
 - `Option<T>` over sentinels (`-1`, `""`, `0`).
-- Derive `Debug` on every public type; `Clone` / `PartialEq` / `Eq` only when
+- Derive `Debug` on every public type; `Clone`/`PartialEq`/`Eq` only when
   meaningful.
-- `#[non_exhaustive]` on public enums that may gain variants (the format is a
-  0.1 draft, so this applies to record and manifest enums).
+- `#[non_exhaustive]` on public enums that may gain variants.
 
-## Functions and Structs
-
-- One responsibility per function; aim for ~40 lines, refactor longer into
-  helpers.
+## Functions and structs
+- One responsibility per function; max ~40 lines, refactor longer into helpers.
 - No output parameters -- return a value or tuple.
-- Constructors: `new` (infallible), `try_new` / `from_*` / `open` (fallible).
+- Constructors: `new` (infallible), `try_new`/`from_*` (fallible).
 - `impl` order: constants -> associated fns -> public methods -> private methods.
 - Avoid `pub` fields unless a plain data container; prefer accessors.
+- One trait per `impl` block.
 
-## Modules and Visibility
-
-- One concern per file. A `mod.rs` re-exports only, no logic.
+## Modules and visibility
+- One concern per file. `mod.rs` re-exports only, no logic.
 - `pub(crate)` for cross-module items that are not public API.
-- Keep the `walrus-fmt` public surface small and documented -- it is the
-  embeddable library (see "Dependency boundary" in project-conventions).
+- Max 3 levels deep: `crate::module::submodule`.
 
 ## Unsafe
-
-- Forbidden except in FFI boundary code (there is none today).
+- Forbidden except in FFI boundary code.
 - Every `unsafe` block needs a `// SAFETY:` comment.
 - Never use `unsafe` to work around the borrow checker.
 
-## Comments and Docs
-
+## Comments and docs
 - Every public item has a `///` comment describing what and why, not how.
 - Use `# Errors`, `# Panics`, `# Examples` where applicable.
 - Delete commented-out dead code -- git recovers it.
 
-## Formatting
-
-- `rustfmt` before committing (`cargo fmt`).
-- Imports grouped std -> external -> crate-local, blank line between groups.
-- Max line length 100.
-
-## Clippy
-
-- Build clean with `cargo clippy -- -D warnings`.
-- Suppress a lint only with `#[allow(clippy::lint_name)]` on the smallest scope,
-  with a comment explaining why.
+## Formatting and clippy
+- `rustfmt` before committing. Imports grouped std -> external -> crate-local,
+  blank line between groups. Max line length 100.
+- Build clean with `cargo clippy -- -D warnings`. Suppress a lint only with
+  `#[allow(clippy::lint_name)]` on the smallest scope, with a reason comment.
 
 ---
 
-## Source File Size and Structure
+## Source file size and structure
 
-**No source file (`.rs`) should exceed 400 lines**, excluding the `#[cfg(test)]`
-module. If non-test code approaches 400 lines, split by concern before adding
-more. Splitting is a refactor (no behaviour change).
+**No source file (`.rs`) may exceed 400 lines**, excluding the `#[cfg(test)]`
+module. If non-test code exceeds 400 lines, split before adding more. The split
+is a REFACTOR (no gate) provided no observable behaviour changes.
 
 Why 400: fits one screen with context; forces file-level single-responsibility;
-keeps AI-assisted editing reliable; consistent with the ~40-line function guide.
+keeps AI-assisted editing reliable; consistent with the 40-line function limit.
 
-### Comment separators
+Split by concern in this order:
+1. `_state.rs` -- data structures, `Default` impls, pure data methods
+2. `_render.rs` -- all `egui` rendering functions
+3. `_commands.rs` -- command dispatch / handler logic
+4. `_dialogs.rs` -- modal dialog rendering and state
+5. `_tests.rs` -- test module (separate file when it alone exceeds 200 lines)
 
-Section separators use plain ASCII only:
+The primary file becomes a thin coordinator that re-exports and delegates.
+
+### Comment separators (ASCII only, per documentation-charset.md)
 ```rust
 // === Section Name ===================================================
 ```
-Full character rules for source files are in `documentation.md` (Rust Source
-Files section). Replace any non-ASCII separator with ASCII whenever a file is
-touched for another reason.

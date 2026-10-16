@@ -8,8 +8,13 @@
 //! directory of tracked files; the tar member set is never globbed for the
 //! directory.
 
-use std::collections::BTreeMap;
 use std::path::Path;
+
+#[path = "archive_read.rs"]
+mod archive_read;
+#[cfg(test)]
+use archive_read::bound_tail_bytes;
+use archive_read::{read_members, read_tracked_file, wchg_member_name};
 
 use crate::manifest::{Manifest, TrackedFile};
 use crate::record::ChangeRecord;
@@ -331,105 +336,6 @@ impl Archive {
             .collect();
         Archive { manifest, files }
     }
-}
-
-// === container collection ==============================================
-
-/// Collect every tar member into a map keyed by member path in a single pass.
-/// Iterating the manifest (not this map) remains the authoritative directory;
-/// the map just avoids relying on tar member ordering.
-fn read_members(tar_bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
-    use std::io::Read;
-
-    let mut archive = tar::Archive::new(tar_bytes);
-    let mut members = BTreeMap::new();
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_string_lossy().into_owned();
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf)?;
-        members.insert(path, buf);
-    }
-    Ok(members)
-}
-
-/// Collect one tracked file's base and parsed `.wchg` from the member map.
-fn read_tracked_file(
-    tracked: &TrackedFile,
-    members: &BTreeMap<String, Vec<u8>>,
-) -> Result<ArchiveFile> {
-    let dir = format!("files/{}/", tracked.id);
-    let base_path = format!("{dir}base");
-    let base = members
-        .get(&base_path)
-        .ok_or_else(|| WalrusError::BaseMissing {
-            id: tracked.id.clone(),
-        })?;
-
-    let wchg_bytes = find_wchg_member(&dir, members).ok_or_else(|| WalrusError::WchgMissing {
-        id: tracked.id.clone(),
-    })?;
-    let (header, records) = container::parse_wchg(&tracked.id, wchg_bytes)?;
-
-    Ok(ArchiveFile {
-        id: tracked.id.clone(),
-        base: base.clone(),
-        header,
-        records,
-    })
-}
-
-/// Max bytes for the advisory `<name>` part of the `files/<id>/<name>.wchg`
-/// member. ustar caps the whole `name` field at 100 bytes; reserve headroom for
-/// `files/` (6), a short-id budget (16), the `/` (1), and the `.wchg` suffix
-/// (5): `100 - 28 = 72`. The real id is `f<N>` (2 bytes typical, <= ~8 bytes for
-/// tens of millions of files), so the id reservation is pure safety margin.
-const WCHG_NAME_MAX_BYTES: usize = 72;
-
-/// A filesystem-safe `<name>` for the `files/<id>/<name>.wchg` member, derived
-/// from the tracked file's authoritative manifest name (FORMAT.md section 2.1:
-/// the member name is a readable rendering for human convenience, present only
-/// so a standalone-extracted log is recognisable). Path separators and
-/// backslashes become `_` so the log stays a single flat member inside the
-/// file's directory; the result is then bounded to [`WCHG_NAME_MAX_BYTES`] so
-/// the whole member path stays ustar-legal (<= 100 bytes) even for a deep path.
-/// The authoritative name is the manifest's, not this slug.
-fn wchg_member_name(name: &str) -> String {
-    let slug: String = name
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' => '_',
-            other => other,
-        })
-        .collect();
-    bound_tail_bytes(&slug, WCHG_NAME_MAX_BYTES)
-}
-
-/// Return the last `<= max` bytes of `s` on a UTF-8 char boundary. If `s` is
-/// already within `max` bytes it is returned unchanged; otherwise a candidate
-/// start of `s.len() - max` is walked FORWARD to the next char boundary before
-/// slicing, so the result is always valid UTF-8 and never exceeds `max` bytes.
-/// A trailing slice is chosen because the file's basename and extension -- the
-/// recognisable part of a standalone `.wchg` -- are at the end of the path.
-fn bound_tail_bytes(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut start = s.len() - max;
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    s[start..].to_string()
-}
-
-/// Match the single `*.wchg` member inside a file's `files/<id>/` directory.
-/// The manifest is authoritative for the name, so the reader matches by
-/// directory + extension rather than reconstructing the exact `<name>.wchg`.
-fn find_wchg_member<'a>(dir: &str, members: &'a BTreeMap<String, Vec<u8>>) -> Option<&'a Vec<u8>> {
-    members
-        .iter()
-        .find(|(path, _)| path.starts_with(dir) && path.ends_with(".wchg"))
-        .map(|(_, bytes)| bytes)
 }
 
 // === FR-W3 reconstruction tests (AC1/AC2/AC3) ==========================

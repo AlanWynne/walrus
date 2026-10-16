@@ -17,14 +17,13 @@ use std::time::Instant;
 use eframe::egui;
 use walrus_fmt::Variant;
 
-use crate::chrome::{self, ExportContext, StatusInfo};
-use crate::import::{ImportState, RfdPicker};
-use crate::navigator::{self, NavigatorState};
+use crate::import::ImportState;
+use crate::navigator::NavigatorState;
 use crate::player::Player;
 use crate::source::{sniff_backend, Backend, HistorySource, WalrusSource};
 use crate::theme::{self, ThemeMode};
 use crate::transport;
-use crate::view::{self, Renderer};
+use crate::view::Renderer;
 
 /// Which backend the open read source is, for the status-bar variant label.
 ///
@@ -58,7 +57,10 @@ mod app_mutate;
 // `app_mutate` (via `super::navigator_renderer`) resolve them unchanged.
 #[path = "app_view.rs"]
 mod app_view;
-use app_view::{navigator_renderer, renderer_label};
+use app_view::navigator_renderer;
+
+#[path = "app_render.rs"]
+mod app_render;
 
 /// The Walker application state.
 pub struct WalkerApp {
@@ -87,6 +89,8 @@ pub struct WalkerApp {
     import: ImportState,
     /// Cached current-version bytes, refreshed on change.
     current_bytes: Vec<u8>,
+    /// The latest reconstruction failure, if the cached bytes could not load.
+    current_error: Option<String>,
     /// The renderer derived from the loaded document's MIME and name.
     renderer: Renderer,
     status: String,
@@ -114,6 +118,7 @@ impl Default for WalkerApp {
             navigator: NavigatorState::default(),
             import: ImportState::default(),
             current_bytes: Vec::new(),
+            current_error: None,
             renderer: Renderer::Text,
             status: "Open a .wal or .wbl file to begin.".to_string(),
             last_frame: Instant::now(),
@@ -296,10 +301,17 @@ impl WalkerApp {
             }
             _ => Ok(Vec::new()),
         };
-        self.current_bytes = match fetched {
-            Ok(bytes) => bytes,
-            Err(e) => format!("<reconstruction error: {e}>").into_bytes(),
-        };
+        match fetched {
+            Ok(bytes) => {
+                self.current_bytes = bytes;
+                self.current_error = None;
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.current_bytes = format!("<reconstruction error: {message}>").into_bytes();
+                self.current_error = Some(message);
+            }
+        }
     }
 
     /// The variant string of the loaded source, if any.
@@ -338,42 +350,6 @@ impl WalkerApp {
     fn source(&self) -> Option<&dyn HistorySource> {
         self.read_source.as_deref()
     }
-
-    /// Render the FR-K9 history view for the open file, if any, and run the
-    /// `rfd` save when the panel yields an export intent.
-    ///
-    /// The panel reads through the format-agnostic seam; only the save dialog
-    /// touches the OS. A no-op when no history file is open or no source is
-    /// loaded.
-    fn show_history_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(file) = self.history_file.clone() else {
-            return;
-        };
-        let Some(source) = self.source() else {
-            return;
-        };
-        let mut export_markdown = None;
-        egui::Panel::right("history").show(ui, |ui| {
-            let action = crate::history_view::history_panel(ui, source, &file);
-            export_markdown = action.export_markdown;
-        });
-        if let Some(markdown) = export_markdown {
-            self.status = app_mutate::save_history_report(&file, &markdown);
-        }
-    }
-
-    /// Build the export context for the chrome menu, if a file is loaded.
-    ///
-    /// The document name/mime come from the ACTIVE SOURCE via `content_hint`
-    /// (the player holds only a position), so export works identically for both
-    /// backends.
-    fn export_context(&self) -> Option<(Vec<walrus_fmt::export::ExportFormat>, String, String)> {
-        let source = self.source()?;
-        let active = self.navigator.active()?;
-        let (mime, name) = source.content_hint(active);
-        let offered = walrus_fmt::export::offered_formats(&mime);
-        Some((offered, mime, name))
-    }
 }
 
 impl eframe::App for WalkerApp {
@@ -400,152 +376,7 @@ impl eframe::App for WalkerApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Top menu bar + toolbar.
-        let ctx_data = self.export_context();
-        egui::Panel::top("menu").show(ui, |ui| {
-            let export = ctx_data
-                .as_ref()
-                .map(|(offered, mime, name)| ExportContext {
-                    offered,
-                    doc: &self.current_bytes,
-                    mime,
-                    document_name: name,
-                });
-            let action = chrome::top_bar(ui, &mut self.theme_mode, export);
-            if action.open {
-                self.prompt_open();
-            }
-            if action.quit {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            if let Some(status) = action.export_status {
-                self.status = status;
-            }
-        });
-
-        // Left navigator: the two-pane file/import browser (FR-K4). Rendered
-        // only when a source is open; selecting a file rebinds the viewer
-        // through the seam.
-        if self.read_source.is_some() {
-            let mut activated = None;
-            let mut import_outcome = None;
-            let mut import_error = None;
-            let mut history_for = None;
-            let mut file_action = None;
-            let picker = RfdPicker;
-            egui::Panel::left("navigator").show(ui, |ui| {
-                let source = self.read_source.as_deref().expect("read source is Some");
-                let action =
-                    navigator::panels(ui, source, &picker, &mut self.import, &mut self.navigator);
-                activated = action.activated;
-                import_outcome = action.import;
-                import_error = action.import_error;
-                history_for = action.history_for;
-                file_action = action.file_action;
-            });
-            if let Some(file) = history_for {
-                // FR-K9: open the per-file history view for the clicked file.
-                self.history_file = Some(file);
-            }
-            if let Some(message) = import_error {
-                self.status = message;
-            }
-            if let Some(outcome) = import_outcome {
-                // FR-K5: a resolved import applies through the concrete source
-                // (the write path) and refreshes the list/selection.
-                self.apply_import(outcome);
-            }
-            if let Some(fa) = file_action {
-                // FR-K6: a per-file or batch control applies through the
-                // concrete source's transactional mutate path and refreshes.
-                self.handle_file_action(fa);
-            }
-            if activated.is_some() {
-                // The active file changed: rebind the viewer's renderer through
-                // the seam. The central viewer reconstructs the active file at
-                // the player's current index via `view::render`, so selection
-                // binds the viewer to that file's version timeline (AC2). A live
-                // per-file `Player` rebind is deferred app-shell wiring: `Player`
-                // holds position-only state the seam does not expose, so FR-K4
-                // binds through the trait (model-level AC2, proven headlessly).
-                if let Some(source) = self.source() {
-                    self.renderer = navigator_renderer(source, &self.navigator);
-                }
-            }
-        }
-
-        // FR-K9 history view: a right panel listing the open file's change log
-        // with a Markdown-report export. Rendered only when a file's history was
-        // requested and a source is loaded.
-        self.show_history_panel(ui);
-
-        // Bottom status bar. The file name, mime, and structured note come from
-        // the ACTIVE SOURCE through the trait (the player holds only a
-        // position); the index/total come from the position-only player.
-        let variant = self.variant_str();
-        let renderer_label = renderer_label(&self.renderer);
-        let status = self.status.clone();
-        let active = self.navigator.active().cloned();
-        let hint = self
-            .source()
-            .zip(active.as_ref())
-            .map(|(source, file)| source.content_hint(file));
-        let note = self
-            .source()
-            .zip(active.as_ref())
-            .and_then(|(source, file)| source.status_note(file));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            let info = self
-                .player
-                .as_ref()
-                .zip(hint.as_ref())
-                .map(|(player, (mime, name))| StatusInfo {
-                    file_name: name,
-                    variant,
-                    index: player.index(),
-                    total: player.len(),
-                    renderer: renderer_label,
-                    mime,
-                    note: note.as_deref(),
-                });
-            chrome::status_bar(ui, info.as_ref(), &status);
-        });
-
-        // Central content: transport strip + the content-aware viewer.
-        egui::CentralPanel::default().show(ui, |ui| {
-            let mut changed = false;
-            if let Some(player) = self.player.as_mut() {
-                changed = transport::controls(ui, player, &mut self.speed);
-            } else {
-                ui.label("No file loaded.");
-            }
-            if changed {
-                self.refresh_bytes();
-            }
-
-            ui.separator();
-            if self.player.is_some() {
-                let active = self.navigator.active().cloned();
-                // The per-frame VersionId ALWAYS comes from the source's
-                // `version_at(active, index)`: `Index(index)` for walrus/
-                // in-memory sources (behaviour-identical to Phase 1), the `Heads`
-                // for that linear point for an Automerge source.
-                let version = active.as_ref().zip(self.source()).map(|(file, source)| {
-                    source.version_at(file, self.player.as_ref().map_or(0, Player::index))
-                });
-                egui::ScrollArea::both().show(ui, |ui| {
-                    match (self.source(), active.as_ref(), version.as_ref()) {
-                        // Drive the viewer through the seam for the selected
-                        // file: reconstruct + paint via one byte path (AC2).
-                        (Some(source), Some(active), Some(version)) => {
-                            view::render(ui, source, active, version);
-                        }
-                        // No source/selection yet: the single-document fallback.
-                        _ => view::paint(ui, &self.renderer, &self.current_bytes),
-                    }
-                });
-            }
-        });
+        WalkerApp::ui(self, ui, _frame);
     }
 }
 
@@ -554,6 +385,54 @@ impl eframe::App for WalkerApp {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct CountingSource {
+        inner: crate::source::testsupport::InMemorySource,
+        reconstruct_count: Arc<AtomicUsize>,
+    }
+
+    impl HistorySource for CountingSource {
+        fn files(&self) -> Vec<crate::source::FileRef> {
+            self.inner.files()
+        }
+
+        fn versions(&self, file: &crate::source::FileRef) -> Vec<crate::source::VersionId> {
+            self.inner.versions(file)
+        }
+
+        fn reconstruct(
+            &self,
+            file: &crate::source::FileRef,
+            version: &crate::source::VersionId,
+        ) -> anyhow::Result<Vec<u8>> {
+            self.reconstruct_count.fetch_add(1, Ordering::SeqCst);
+            self.inner.reconstruct(file, version)
+        }
+
+        fn metadata(
+            &self,
+            file: &crate::source::FileRef,
+            version: &crate::source::VersionId,
+        ) -> crate::source::VersionMeta {
+            self.inner.metadata(file, version)
+        }
+
+        fn content_hint(&self, file: &crate::source::FileRef) -> (String, String) {
+            self.inner.content_hint(file)
+        }
+
+        fn file_info(&self, file: &crate::source::FileRef) -> crate::source::FileInfo {
+            self.inner.file_info(file)
+        }
+
+        fn history(&self, file: &crate::source::FileRef) -> Vec<crate::source::HistoryEntry> {
+            self.inner.history(file)
+        }
+    }
 
     /// Write `bytes` to a uniquely named file under a fresh temp dir and return
     /// both so the dir lives for the test's duration.
@@ -946,6 +825,38 @@ mod tests {
         assert!(
             empty.state().player.is_none(),
             "an unopened shell has no player and still renders"
+        );
+    }
+
+    #[test]
+    fn rendering_unchanged_frames_uses_cached_bytes_without_reconstructing() {
+        let reconstruct_count = Arc::new(AtomicUsize::new(0));
+        let source = CountingSource {
+            inner: crate::source::testsupport::InMemorySource::single(
+                "notes.txt",
+                "text/plain",
+                b"cached bytes",
+            ),
+            reconstruct_count: Arc::clone(&reconstruct_count),
+        };
+        let active = source.files().into_iter().next().expect("one file");
+        let mut app = WalkerApp::default();
+        app.navigator.select(&active);
+        app.renderer = navigator_renderer(&source, &app.navigator);
+        app.player = Some(Player::new(0));
+        app.current_bytes = source
+            .reconstruct(&active, &crate::source::VersionId::Index(0))
+            .expect("initial cached bytes");
+        app.read_source = Some(Box::new(source));
+        assert_eq!(reconstruct_count.load(Ordering::SeqCst), 1);
+
+        let mut harness = egui_kittest::Harness::builder().build_eframe(|_| app);
+        harness.run();
+
+        assert_eq!(
+            reconstruct_count.load(Ordering::SeqCst),
+            1,
+            "the unchanged shell frame must paint current_bytes without reconstructing"
         );
     }
 

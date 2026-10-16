@@ -132,12 +132,6 @@ pub(crate) fn trim_to(
 /// # Errors
 /// Returns [`crate::WalrusError::Rebase`] when `versions == 0`, and propagates
 /// [`crate::WalrusError::SpliceOutOfBounds`] from the fold.
-// The Archive layer maps `generations = N` onto `trim_to(keep = N - 1)` directly
-// (it returns early for the unlimited `N = 0` case, so the impossible
-// zero-versions request this wrapper guards cannot reach it). This typed entry
-// is retained and unit-tested as the version-count-facing form; its only caller
-// today is the pure-core test, hence the scoped allow.
-#[allow(dead_code)]
 pub(crate) fn trim_to_versions(
     base: &[u8],
     records: &[ChangeRecord],

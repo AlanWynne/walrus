@@ -22,7 +22,11 @@ set -u
 # (tests/acceptance/TestData -> three levels up), but can be overridden.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${REPO:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-TEMPDIR="${TEMPDIR:-${TMPDIR:-/tmp}/Walrus-Temp-TestData}"
+# Scratch work area (wiped and recreated each run). Defaults to a dedicated
+# subfolder under C:\workspace\temp (/c/workspace/temp under Git Bash / MSYS)
+# so the step-1 wipe only ever removes this harness's own scratch. Override
+# TEMPDIR to relocate it (e.g. TMPDIR-based on a non-Windows host).
+TEMPDIR="${TEMPDIR:-/c/workspace/temp/Walrus-TestData}"
 BASE="$TEMPDIR/Base"
 WORK0000="$TEMPDIR/Work0000"
 WORK0001="$TEMPDIR/Work0001"
@@ -283,6 +287,42 @@ echo " After : $WALRUS add glob.wal '*.md' --wal   (literal pattern, shell did n
 echo " add rc=$RC20   stored names=$GLOBCOUNT   Expectation: rc 0, 3 names"
 report "$RC20" 0 "STEP 20a" "add with literal *.md pattern succeeds" "rc 0"
 report "$GLOBCOUNT" 3 "STEP 20b" "wildcard *.md expands to exactly the 3 md files" "3 stored names"
+
+# -- 21. Search: find a known string / no-match / case-insensitive ---------
+# search is READ-ONLY: reconstruct each selected file at the chosen version and
+# report where a string occurs. Exercised against the pristine $WORK0000.wal
+# (the real .md/.rs source tree), which is certain to contain the literal
+# "walrus". RC table (CLI-DESIGN 5.6): 0 found, 1 no match, 2 usage. The return
+# code alone is the pass criterion.
+echo
+echo "[STEP 21] Search: a known literal is found - RC 0"
+"$WALRUS" search "$WORK0000.wal" walrus > "$TEMPDIR/search-found.log" 2>&1
+RC21A=$?
+echo " After : $WALRUS search $WORK0000.wal walrus   (expect at least one hit)"
+echo " Return code: $RC21A   Expectation: 0 (found)"
+report "$RC21A" 0 "STEP 21a" "search finds a known literal string" "RC 0 (found)"
+
+# The absent-needle is assembled from two halves at runtime so the literal
+# token never appears in any tracked .md/.rs file (including this harness or the
+# resume notes) -- otherwise STEP 2's copy would ingest it into the archive and
+# the "no match" search would wrongly find it. Concatenating keeps the whole
+# string out of the source tree.
+NEEDLE_A="qzx7"
+NEEDLE_B="k9vmwp"
+ABSENT="${NEEDLE_A}${NEEDLE_B}"
+echo "[STEP 21] Search: a string that is absent - RC 1"
+"$WALRUS" search "$WORK0000.wal" "$ABSENT" > "$TEMPDIR/search-none.log" 2>&1
+RC21B=$?
+echo " After : $WALRUS search $WORK0000.wal <runtime-assembled absent token>   (expect no hits)"
+echo " Return code: $RC21B   Expectation: 1 (no match)"
+report "$RC21B" 1 "STEP 21b" "search of an absent string reports no matches" "RC 1 (no match)"
+
+echo "[STEP 21] Search: case-insensitive -i finds a mixed-case needle - RC 0"
+"$WALRUS" search "$WORK0000.wal" WALRUS -i > "$TEMPDIR/search-ci.log" 2>&1
+RC21C=$?
+echo " After : $WALRUS search $WORK0000.wal WALRUS -i   (case-folded hit)"
+echo " Return code: $RC21C   Expectation: 0 (found via -i)"
+report "$RC21C" 0 "STEP 21c" "case-insensitive search matches a mixed-case needle" "RC 0 (found)"
 
 # -- 90. Report summary ----------------------------------------------------
 echo

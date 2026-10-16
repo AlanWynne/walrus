@@ -9,8 +9,8 @@ each with its own base, `.wchg` change log, and independent index range. The
 authoritative spec is [`FORMAT.md`](FORMAT.md); design decisions are in
 [`CLI-DESIGN.md`](CLI-DESIGN.md). The library (`walrus-fmt`), both CLIs (`walx`
 extract-only, `walrus` full management), the shared `wal-cli-common`, the
-regenerated examples, and an exhaustive Python acceptance suite + TCR are all on
-main. The historical gap report at
+regenerated examples, the `search` feature, and an exhaustive Python acceptance
+suite + TCR are all on main. The historical gap report at
 `.agents/tasks/format-breaking-gap-report.md` records the original file-by-file
 audit; the sequence it drove is now complete (see "Format re-work sequence"
 below, all steps DONE).
@@ -22,6 +22,90 @@ legacy single-file `WalrusFile` shim was removed entirely in `58117df`; the old
 and walker) have converged on `main`; a full `cargo gate --build` runs clean.
 The remaining walker work is the open items in the "Audit follow-ups" and
 "Deferred / future ideas" sections below, not a migration.
+
+## Going forward -- prioritized plan (updated 2026-10-16)
+
+At `main` tip `31ecd20`, the headless `WalkerApp` shell coverage and import/mutate
+fix are merged. The Tier A README corrections and `source::testsupport` sibling
+module are implemented in the working tree. Scoped checks passed:
+`cargo fmt -- --check`, `cargo test -p walker -j 1` (215 passed, 1 ignored),
+`cargo build -p walker`, and `cargo clippy -p walker -- -D warnings`. The owner
+also ran the full `cargo gate --build` on 2026-10-16; it completed CLEAN with
+583/583 tests passed. Tier A is verified. walrus-core is feature-complete;
+walker is migrated and merged; the search feature has shipped. What remains is
+a short list of hygiene and OPTIONAL feature work -- NO known defects block a
+release.
+
+ENVIRONMENT NOTE (historical): an earlier whole-workspace `cargo test` on this
+box crashed `rustc` with out-of-memory / `STATUS_STACK_BUFFER_OVERRUN`
+(0xc0000409) while compiling heavier egui/eframe targets in parallel. The full
+`cargo gate --build` has since completed cleanly using nextest: 583/583 tests
+passed. If the older cargo-test invocation recurs, lower parallelism
+(`cargo test -j 1` or `-j 2`) or test crate-by-crate.
+
+The plan, highest value first. Tiers A-B close real debt and should land before
+any new feature; tier C is optional/future and each item is its own worktree off
+latest `main`.
+
+### Tier A -- correctness coverage + stale docs
+
+1. [DONE, merged `31ecd20`] Headless `WalkerApp` shell coverage drives the real
+   app through open/select/seek/render and exercises import/mutate wiring,
+   closing the coverage gap that allowed the legacy-reader bug to ship.
+2. [DONE, full gate clean] The library examples now use `Archive` / `FileId`
+   instead of the removed `WalrusFile` API in the top-level and crate READMEs;
+   `examples/README.md` describes the current multi-file mutate API.
+
+### Tier B -- hygiene / NFR (full gate clean)
+
+3. [DONE, full gate clean] NFR-1 file splits: archive member readers now live in
+   `crates/walrus/src/archive_read.rs`; Walker UI rendering lives in
+   `crates/walker/src/app_render.rs`; and `source::testsupport` lives in its
+   own feature-gated sibling. Both coordinators are below the 400 non-test-line
+   cap.
+4. [DONE, full gate clean] The Walker central panel paints the cached
+   `current_bytes` instead of reconstructing on every frame. Selection changes
+   refresh the cache, renderer selection remains source-derived, and
+   reconstruction errors retain their inline error presentation. A headless
+   regression test asserts rendering an unchanged frame makes no extra
+   reconstruction calls.
+5. [DONE, full gate clean] Gzip-not-supported has its own
+   `WalrusError::UnsupportedCodec` variant. Archive trimming now uses the
+   version-count `trim_to_versions` entry point, removing its dead-code
+   exception while retaining its zero-version and no-op tests.
+
+Scoped checks passed: `cargo fmt --all`, `cargo test -p walrus-fmt -p walker
+-j 1`, `cargo clippy -p walrus-fmt -p walker --all-targets -- -D warnings`,
+and `cargo build -p walrus-fmt -p walker`. The owner then ran the full
+`cargo gate --build`, which completed CLEAN on 2026-10-16 with 585/585 tests
+passed and 0 failed. Report: `.gate/gate.report.log`.
+
+### Tier C -- OPTIONAL features (each its own worktree off latest `main`)
+
+6. ALL-VERSIONS search: wire the existing `search_versions` range primitive +
+   the version-range renderer seam through the CLI (grouping/collapsing by
+   version-index range with per-version timestamps). The library + seam already
+   exist; this is CLI + renderer work only. Spec the RC behaviour in
+   CLI-DESIGN section 6 first.
+7. OFFICE-CONTAINER (ODF / OOXML): store an office document by unpacking its
+   inner zip parts, tracking each as a grouped file, repacking byte-identically
+   on extract. Approved, design-reviewed planning at
+   `docs/proposals/office-container/`. Start with the spec-first FORMAT.md change
+   in `format-change-proposal.md`, in a FRESH worktree off latest `main`.
+8. WALKER git-history source and the Automerge/Yrs multi-format history player,
+   both behind the source-agnostic `HistorySource` trait -- Walker-side /
+   feature-gated only, never into `walrus-fmt` (invariant 2). Design notes under
+   `.agents/tasks/walker-git-source/` and
+   `.agents/tasks/history-source-automerge.md`.
+9. OPTIONAL real-git-history `--at` fixture: only if authentic content/dates are
+   specifically wanted; the synthetic `test_at_timeline.py` already proves the
+   `--at` behaviour deterministically.
+
+### Suggested next move
+
+Tier A and B are full-gate verified. Review and commit only the intended
+Tier A/B changes; then choose an optional Tier C feature in a fresh worktree
+based on the latest `main`.
 
 ## Design decisions locked (see CLI-DESIGN.md)
 
@@ -144,15 +228,32 @@ cross-stream note:
 - Pre-existing clippy `manual_str_repeat` lint at `crates/walrus/src/archive.rs`
   (surfaces under `cargo clippy --all-targets`).
 
-## SEARCH feature -- WIP (on the `walrus-core` worktree, not yet merged)
+## SEARCH feature -- DONE (shipped on `main`)
 
-Search a `.wal` / `.wbl` archive for a string and report WHERE it was found
-(file name/path, version index, byte offset, 1-based line, 1-based column) as a
-Markdown report (default) or plain text, from BOTH `walrus` and `walx`. Full
-plan: `.agents/tasks/walrus-search/plan.md` (carried into main alongside this
-entry). KEEP -- this is real, wanted work-in-progress; do not discard.
+STATUS (verified 2026-10-15): the search feature is LANDED on `main`, not WIP.
+The library matcher is at `crates/walrus/src/search/mod.rs` +
+`search/line_col.rs` (re-exported from `lib.rs` as `search_version`,
+`search_versions`, `Match`, `MatchMode`, `SearchOptions`); the shared CLI engine
++ renderer are at `crates/wal-cli-common/src/search.rs` +
+`search_render.rs`; the `search` subcommand is wired into BOTH binaries
+(`crates/walrus-cli/src/cmd_search.rs`, `crates/walx/.../search`) with
+integration tests (`crates/walx/tests/search.rs`,
+`crates/walrus-cli/tests/search.rs`). All library search unit tests pass
+(part of the 162 green `walrus-fmt --lib` tests). Original plan preserved for
+reference at `.agents/tasks/walrus-search/plan.md`.
 
-Shape (as planned/implemented in the worktree):
+ACCEPTANCE + HARNESS COVERAGE (added 2026-10-16): the Python acceptance suite
+now has `tests/acceptance/walrus_cli/test_search.py` (9 tests: literal-found +
+Markdown report fields RC 0, no-match RC 1, `-i`, `--format plain`, file-mask,
+two-selectors RC 2, index-beyond-last RC 4, `--regex`, and a read-only guard),
+with the matching requirement ids registered in `requirements.py`
+(`CLI-DESIGN-5.6-search-*` + `CLI-DESIGN-6-rc1`). TCR after the addition: 132
+tests, 131 pass, 0 fail, 1 skip, 0 uncovered, verdict PASS. The manual harness
+(`WalrusTestHarness.bat` + `.sh`) gained STEP 21: search a known literal (RC 0),
+an absent string (RC 1), and case-insensitive `-i` (RC 0); its STEP 19 also
+picks up `test_search.py` automatically.
+
+Shape (as shipped):
 - MATCHER lives in `walrus-fmt` as pure logic over reconstructed bytes
   (`crates/walrus/src/search.rs`: `search_version` single-version primitive +
   `search_versions` range stub for the deferred all-versions path). Honors the
@@ -172,15 +273,8 @@ Shape (as planned/implemented in the worktree):
   match; column = 1-based in Unicode scalar values; CR is an ordinary char.
 - ALL-VERSIONS search is DESIGNED-FOR but DEFERRED: the `search_versions` range
   primitive and the version-range renderer seam exist, but the CLI wires only
-  single-version search for now.
-
-STATUS: lives on the `feature/walrus-core` worktree as uncommitted/staged work
-(new `search.rs` / `cmd_search.rs` / `search_render.rs` + tests across
-`walrus-fmt`, `wal-cli-common`, `walrus-cli`, `walx`, plus `CLI-DESIGN.md` and
-`ROADMAP.md` edits). NEXT: finish per the plan's TDD item list, run the scoped
-checks, then land it on `main` via a fresh worktree off current `main` (the
-branch tip predates the legacy-removal, so rebase/re-apply onto `main` rather
-than merging the stale branch -- per the "Branch hygiene" rule).
+  single-version search for now. This is the one remaining search follow-up
+  (see "Going forward" below).
 
 ## Future features -- DESIGNED, not yet started
 
@@ -215,43 +309,29 @@ than merging the stale branch -- per the "Branch hygiene" rule).
 
 Full report: `.agents/tasks/walrus-walker-audit.md`. The `58117df` legacy
 removal is clean at the code level (no removed-symbol residue, library builds +
-clippies clean, dependency boundary intact, no library `unwrap`/`panic`, variant
-symmetry asserted). Open items, prioritized:
+clippy clean, dependency boundary intact, no library `unwrap`/`panic`, variant
+symmetry asserted).
 
-- [HIGH] No test drives the REAL `WalkerApp` shell (`update`/`ui`, `open_walrus`,
-  `refresh_bytes`, `bind_player`, export/import/mutate wiring). Every walker
-  harness test rebuilds a slice of app logic in a standalone closure that
-  MIRRORS `app.rs` rather than running it -- the exact shape of the bug that
-  shipped green (the `open_walrus` legacy-reader bug). FIX: a headless
-  `egui_kittest` test that opens a temp multi-file `.wal` through `WalkerApp` and
-  asserts player size / active selection / `current_bytes == reconstruct(file,
-  Index(0))`; also drive `handle_file_action` / `apply_import` against a
-  `TempDir`. Feasible headless (only the `rfd` dialogs are genuinely manual).
-  Effort ~0.5-1 day.
-- [MEDIUM] Walker re-reconstructs the viewed document EVERY FRAME
-  (`app.rs` central panel -> `view::render` -> `source.reconstruct`), while the
-  cached `current_bytes` is used only on a dead fallback arm. Wasteful during
-  playback repaints. FIX: paint from `current_bytes` on the primary arm too
-  (reconstruct only in `refresh_bytes`), or add a per-(file,version) memo in
-  `WalrusSource`. Keep any cache in walker (invariant 2). Effort ~1-2 h + a
-  regression test.
-- [MEDIUM] NFR-1 (400-non-test-line cap) breaches: `crates/walrus/src/archive.rs`
-  (~440; split the container-collection read helpers into an `archive_read.rs`
-  sibling), `crates/walker/src/source/mod.rs` (~472, inflated by the
-  NON-`cfg(test)` `testsupport` module -- gate it behind `cfg(any(test, feature
-  = "testsupport"))` or move to `source/testsupport.rs`, which alone fixes it),
-  `crates/walker/src/app.rs` (~535; split the `ui` render builders into an
-  `app_render.rs`). Pure refactors, verified by existing scoped tests.
-- [MEDIUM] README.md "Using the library" example still names the removed
-  `WalrusFile` type -- rewrite against `Archive` / `FileId` (mirror
-  `crates/walker/tests/integration.rs`). (This ROADMAP update covers the stale
-  walker status the audit also flagged.)
-- [LOW] `rebase.rs::trim_to_versions` is dead production surface (test-only,
-  justified `#[allow(dead_code)]`): either route the Archive generations path
-  through it or drop it and keep its zero-versions guard test against `trim_to`.
-- [LOW] gzip-not-supported returns `WalrusError::Manifest(...)` -- give it a
-  dedicated `UnsupportedCodec` variant for cleaner error taxonomy (`WalrusError`
-  should be `#[non_exhaustive]`, so additive).
+Resolved since the audit:
+
+- [DONE, merged `31ecd20`] The headless `WalkerApp` shell test drives open,
+  select, seek, render, and import/mutate wiring.
+- [DONE in working tree] The top-level and crate README library examples now
+  use `Archive` / `FileId`; `examples/README.md` reflects the mutate API.
+- [DONE in working tree] The in-memory `testsupport` fixture is isolated in its
+  own feature-gated sibling module, rather than counting against `source/mod.rs`.
+- [DONE in working tree] The archive reader helpers and Walker app renderer are
+  split into focused siblings; both coordinator files are now under the
+  non-test line cap.
+- [DONE in working tree] The Walker central panel paints cached bytes and has a
+  no-reconstruct-on-unchanged-frame regression test.
+- [DONE in working tree] Gzip decode deferral uses a typed
+  `WalrusError::UnsupportedCodec`; the archive rebase path uses
+  `trim_to_versions` directly.
+
+Remaining audit items, prioritized:
+No outstanding items remain from this audit. Remaining project work is listed
+in Tier C and the deferred/future ideas below.
 
 Explicitly NOT recommended by the audit: dropping `.wbl` / reverse-log support
 (first-class variant, load-bearing symmetry); moving export backends out from

@@ -26,8 +26,8 @@ cargo run -p walrus-fmt --example generate_story
 ```
 
 The generator (`crates/walrus/examples/generate_story.rs`) is also a worked
-example of the container writer: build a `WalrusFile` from a base plus a forward
-log of splices, then `write()` it.
+example of the multi-file mutate API: seed an `Archive`, `add` the base file,
+append a forward log of splices with `update_with_splices`, then `write()` it.
 
 ## walrus.wal (the mascot demo)
 

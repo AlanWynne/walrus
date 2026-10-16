@@ -52,6 +52,14 @@ automerge = { version = "0.12.0", optional = true }
 # Turns on the feature-gated AutomergeSource adapter and pulls in the automerge
 # crate (`dep:automerge`). NO `default` entry: the feature is OFF by default.
 automerge = ["dep:automerge"]
+# Exposes `source::testsupport` (the in-memory `HistorySource` fixture) to code
+# OUTSIDE the lib's own `#[cfg(test)]` tree -- namely the integration-test crates
+# under `tests/`, which link `walker` as an ordinary dependency where `cfg(test)`
+# is false. Keeping the module behind `any(test, feature = "testsupport")` means
+# it is NOT part of the shipped product surface (the default `cargo build` drops
+# it), which clears the NFR-1 line-cap pressure in `source/mod.rs`. The self
+# dev-dependency below turns this on automatically for `cargo test`.
+testsupport = []
 
 [dev-dependencies]
 # Headless GUI test harness. The default (egui) harness drives a Ui closure for
@@ -70,3 +78,8 @@ tempfile = "3"
 # crates/walrus/tests/archive_read.rs, rather than hand-rolling container bytes.
 tar = { workspace = true }
 zstd = { workspace = true }
+# Self dev-dependency enabling `testsupport` so the integration-test crates under
+# `tests/` can reach `walker::source::testsupport` (they link `walker` with
+# `cfg(test)` false). This forces the lib to build with the feature ON for every
+# dev/test target, while the shipped `cargo build` leaves it OFF.
+walker = { path = ".", features = ["testsupport"] }
