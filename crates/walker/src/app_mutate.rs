@@ -29,9 +29,20 @@ impl WalkerApp {
         if self.write_source.is_none() {
             return;
         }
+        // Persist to the OPENED archive, not to `outcome.path` (which is the
+        // user-picked SOURCE file the bytes came from). `WalrusSource::import`'s
+        // `path` argument is the archive WRITE TARGET, so passing `outcome.path`
+        // wrote the mutated archive OVER the picked file and left the opened
+        // archive at `self.path` untouched -- making the import invisible in the
+        // GUI (the later `sync_read_source` re-reads the unchanged `self.path`).
+        // Use `self.path`, matching `handle_file_action`; a no-open-archive
+        // import is a clean no-op via the same guard.
+        let Some(path) = self.path.clone() else {
+            return;
+        };
         let target = outcome.resolution.target_name().to_string();
         let source = self.write_source.as_mut().expect("write source is Some");
-        let result = source.import(&outcome.resolution, &outcome.bytes, &outcome.path);
+        let result = source.import(&outcome.resolution, &outcome.bytes, &path);
         match result {
             Ok(()) => {
                 self.status = format!("Imported {target}");
@@ -62,6 +73,15 @@ impl WalkerApp {
         if let Some(source) = self.source() {
             self.renderer = navigator_renderer(source, &self.navigator);
         }
+        // A mutate can change the active file's version count (an update appends
+        // a version; condense/set-generations can drop versions), so the player
+        // built at open time is now stale. Rebind it to the active file's
+        // current version range (seeked to index 0 == current) and refresh the
+        // cached bytes, mirroring the open path (`bind_player` + `refresh_bytes`)
+        // so the viewer shows the just-written current version rather than the
+        // pre-mutate bytes.
+        self.rebind_player_to_active();
+        self.refresh_bytes();
     }
 
     /// Apply a FR-K6 per-file or batch control intent through the concrete

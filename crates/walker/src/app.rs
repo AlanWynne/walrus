@@ -260,6 +260,23 @@ impl WalkerApp {
         (player, len)
     }
 
+    /// Rebuild the position-only player from the CURRENTLY ACTIVE file's version
+    /// count after a mutate changed it, seeking to index 0 (current). Unlike
+    /// `bind_player` (which keys off the first tracked file at open time), this
+    /// keys off the active selection so an import/update/condense that altered
+    /// the viewed file's version range leaves the player's far-index correct. A
+    /// no-op when nothing is open or no file is active.
+    fn rebind_player_to_active(&mut self) {
+        let len = match (self.source(), self.navigator.active().cloned()) {
+            (Some(source), Some(active)) => source.versions(&active).len().saturating_sub(1),
+            _ => return,
+        };
+        let mut player = Player::new(len);
+        player.seek(0);
+        transport::set_speed_multiplier(&mut player, self.speed);
+        self.player = Some(player);
+    }
+
     /// Refresh the cached current-version bytes from the ACTIVE SOURCE at the
     /// player's current index.
     ///
@@ -929,6 +946,286 @@ mod tests {
         assert!(
             empty.state().player.is_none(),
             "an unopened shell has no player and still renders"
+        );
+    }
+
+    // === Driving the REAL shell MUTATE/IMPORT path (audit section 3 gap) =
+    //
+    // Task point 4: these drive `WalkerApp::apply_import` and
+    // `WalkerApp::handle_file_action` -- the SHELL mutate/import methods --
+    // against a real archive on a `TempDir`, asserting BOTH the transactional
+    // on-disk change AND the shell's in-memory refresh (read source, selection,
+    // `current_bytes`). This closes a gap distinct from `tests/import.rs`: that
+    // suite drives `WalrusSource::import` (the underlying write source) directly
+    // but NEVER the `WalkerApp::apply_import`/`handle_file_action` wiring that
+    // calls it and then re-syncs the read source + selection. A divergence
+    // between that shell wiring and the write source would slip past the
+    // existing tests; it is caught here.
+    //
+    // No `rfd` dialog is involved: `apply_import` takes an already-resolved
+    // `ImportOutcome` (the OS pick happens upstream in the navigator pane, which
+    // `tests/import.rs` drives with the `FakePicker`), so building an
+    // `ImportOutcome` directly is the exact seam the shell consumes.
+
+    use crate::import::{ImportOutcome, ImportResolution};
+    use crate::navigator::controls::FileAction;
+    use crate::source::VersionId;
+
+    /// Open the canonical multi-file `.wal` into a shell and keep its temp dir
+    /// alive. The write source + path are set (a real walrus open), so the
+    /// mutate/import methods have a target.
+    fn open_shell_over_canonical() -> (tempfile::TempDir, WalkerApp) {
+        let (dir, path) = write_temp_wal(&canonical_multi_file_wal(), "notes.wal");
+        let mut app = WalkerApp::default();
+        app.open_file(path);
+        (dir, app)
+    }
+
+    /// Validates: app-shell import coverage gap (audit section 3) -- the SHELL
+    /// `apply_import` ADD path, not the write source directly.
+    ///
+    /// Task point 4: applying an `Add` import through `WalkerApp::apply_import`
+    /// adds the file to the archive ON DISK (transactionally), rebuilds the read
+    /// source so the navigator lists the new file, and selects it.
+    #[test]
+    fn apply_import_add_through_the_shell_adds_a_file_on_disk_and_refreshes() {
+        let (dir, mut app) = open_shell_over_canonical();
+        let path = dir.path().join("notes.wal");
+
+        let outcome = ImportOutcome {
+            path: dir.path().join("extra.txt"),
+            bytes: b"brand new".to_vec(),
+            resolution: ImportResolution::Add {
+                name: "extra.txt".to_string(),
+            },
+        };
+        app.apply_import(outcome);
+
+        // The shell reported success and re-selected the imported file.
+        assert!(
+            app.status.contains("Imported extra.txt"),
+            "apply_import reports the imported name, got: {}",
+            app.status
+        );
+        let active = app
+            .navigator
+            .active()
+            .cloned()
+            .expect("active after import");
+        assert_eq!(
+            active.name(),
+            "extra.txt",
+            "the shell selects the just-imported file"
+        );
+
+        // The read source was rebuilt from disk and lists the new file.
+        let shell_names: Vec<String> = app
+            .source()
+            .expect("read source after import")
+            .files()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        assert!(
+            shell_names.contains(&"extra.txt".to_string()),
+            "the refreshed read source lists the imported file, got: {shell_names:?}"
+        );
+
+        // The change hit disk transactionally: a fresh open sees it too.
+        let reopened = crate::source::WalrusSource::open(&path).expect("re-open");
+        let disk = reopened
+            .files()
+            .into_iter()
+            .find(|f| f.name() == "extra.txt")
+            .expect("imported file is tracked on disk");
+        assert_eq!(
+            reopened
+                .reconstruct(&disk, &VersionId::Index(0))
+                .expect("reconstruct current"),
+            b"brand new",
+            "the imported bytes are the current version on disk"
+        );
+    }
+
+    /// Validates: app-shell import coverage gap (audit section 3) -- the SHELL
+    /// `apply_import` UPDATE (append) path.
+    ///
+    /// Task point 4: applying a confirmed `UpdatePrompt` import of an EXISTING
+    /// name through the shell appends exactly one version on disk and refreshes
+    /// `current_bytes` to the new current version.
+    #[test]
+    fn apply_import_update_through_the_shell_appends_a_version_and_refreshes_bytes() {
+        let (dir, mut app) = open_shell_over_canonical();
+        let path = dir.path().join("notes.wal");
+
+        // Version count of notes.txt before: indices [0, 2] inclusive == 3.
+        let before = app
+            .source()
+            .expect("source")
+            .file_info(&app.navigator.active().cloned().expect("active"))
+            .index_size;
+
+        let outcome = ImportOutcome {
+            path: dir.path().join("notes.txt"),
+            bytes: b"a wholly new revision".to_vec(),
+            // An existing name confirmed to append (the FR-K5 UpdatePrompt the
+            // navigator surfaces, here already resolved to the update intent).
+            resolution: ImportResolution::UpdatePrompt {
+                name: "notes.txt".to_string(),
+            },
+        };
+        app.apply_import(outcome);
+
+        assert!(
+            app.status.contains("Imported notes.txt"),
+            "apply_import reports the updated name, got: {}",
+            app.status
+        );
+
+        // Exactly one version was appended on disk.
+        let reopened = crate::source::WalrusSource::open(&path).expect("re-open");
+        let file = reopened
+            .files()
+            .into_iter()
+            .find(|f| f.name() == "notes.txt")
+            .expect("notes.txt still tracked");
+        assert_eq!(
+            reopened.file_info(&file).index_size,
+            before + 1,
+            "a confirmed update appends exactly one version on disk"
+        );
+        assert_eq!(
+            reopened
+                .reconstruct(&file, &VersionId::Index(0))
+                .expect("reconstruct current"),
+            b"a wholly new revision",
+            "index 0 on disk is the newly imported current version"
+        );
+
+        // The shell refreshed its cached current bytes to the new version.
+        assert_eq!(
+            app.current_bytes, b"a wholly new revision",
+            "the shell refreshed current_bytes to the appended current version"
+        );
+    }
+
+    /// Validates: app-shell mutate coverage gap (audit section 3) -- the SHELL
+    /// `handle_file_action` REMOVE path.
+    ///
+    /// Task point 4: a `FileAction::Remove` through the shell removes the file
+    /// from the archive on disk (transactionally) and refreshes the read source
+    /// so the navigator no longer lists it.
+    #[test]
+    fn handle_file_action_remove_through_the_shell_drops_a_file_on_disk_and_refreshes() {
+        let (dir, mut app) = open_shell_over_canonical();
+        let path = dir.path().join("notes.wal");
+
+        // Precondition: both files are tracked (data.csv is id 1).
+        let before: Vec<String> = app
+            .source()
+            .expect("source")
+            .files()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        assert!(
+            before.contains(&"data.csv".to_string()),
+            "precondition: data.csv is tracked, got: {before:?}"
+        );
+
+        app.handle_file_action(FileAction::Remove { id: 1 });
+
+        assert!(
+            app.status.contains("Removed file 1"),
+            "handle_file_action reports the removal, got: {}",
+            app.status
+        );
+
+        // The refreshed read source no longer lists the removed file.
+        let after: Vec<String> = app
+            .source()
+            .expect("read source after remove")
+            .files()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        assert!(
+            !after.contains(&"data.csv".to_string()),
+            "the refreshed read source dropped the removed file, got: {after:?}"
+        );
+
+        // The change hit disk transactionally: a fresh open agrees.
+        let reopened = crate::source::WalrusSource::open(&path).expect("re-open");
+        let disk_names: Vec<String> = reopened
+            .files()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        assert!(
+            !disk_names.contains(&"data.csv".to_string()),
+            "the removed file is gone on disk, got: {disk_names:?}"
+        );
+        assert!(
+            disk_names.contains(&"notes.txt".to_string()),
+            "the untouched file survives on disk, got: {disk_names:?}"
+        );
+    }
+
+    /// Validates: app-shell mutate coverage gap (audit section 3) -- the SHELL
+    /// `handle_file_action` SET-GENERATIONS path.
+    ///
+    /// Task point 4: a `FileAction::SetGenerations` through the shell persists
+    /// the generation cap to the archive on disk (transactionally) and the
+    /// refreshed read source reports the new cap.
+    #[test]
+    fn handle_file_action_set_generations_through_the_shell_persists_the_cap() {
+        let (dir, mut app) = open_shell_over_canonical();
+        let path = dir.path().join("notes.wal");
+
+        // Precondition: notes.txt (id 0) has no cap (unlimited -> None).
+        let file0 = app.navigator.active().cloned().expect("active");
+        assert_eq!(
+            app.source().expect("source").file_info(&file0).generations,
+            None,
+            "precondition: no generation cap is set"
+        );
+
+        app.handle_file_action(FileAction::SetGenerations { id: 0, n: Some(1) });
+
+        assert!(
+            app.status.contains("Set generation cap on file 0"),
+            "handle_file_action reports the cap change, got: {}",
+            app.status
+        );
+
+        // The refreshed read source reports the new cap ...
+        let shell_file = app
+            .source()
+            .expect("read source after set-generations")
+            .files()
+            .into_iter()
+            .find(|f| f.name() == "notes.txt")
+            .expect("notes.txt still tracked");
+        assert_eq!(
+            app.source()
+                .expect("source")
+                .file_info(&shell_file)
+                .generations,
+            Some(1),
+            "the refreshed read source reports the new generation cap"
+        );
+
+        // ... and it persisted to disk transactionally.
+        let reopened = crate::source::WalrusSource::open(&path).expect("re-open");
+        let disk_file = reopened
+            .files()
+            .into_iter()
+            .find(|f| f.name() == "notes.txt")
+            .expect("notes.txt on disk");
+        assert_eq!(
+            reopened.file_info(&disk_file).generations,
+            Some(1),
+            "the generation cap persisted to disk"
         );
     }
 }
