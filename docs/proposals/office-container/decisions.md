@@ -1,9 +1,10 @@
 # Office container -- decision record (ADR)
 
-Status: DECISIONS (planning). A concise, ADR-style record of the choices that
-frame the office-container feature. Fuller reasoning is in `design.md`
-(Alternatives / decision record, section 9) and the normative spec text is in
-`format-change-proposal.md`. Requirements live in `requirements.md`.
+Status: DECISIONS (active implementation). A concise, ADR-style record of the
+choices that frame the office-container feature. FORMAT.md section 8 is
+authoritative for the adopted on-disk contract. Fuller reasoning is in
+`design.md` (Alternatives / decision record, section 9). Requirements live in
+`requirements.md`.
 
 ASCII only (`->`, `<->`, `<=`, `>=`, `--`) per the documentation steering rule.
 
@@ -42,13 +43,12 @@ ASCII only (`->`, `<->`, `<=`, `>=`, `--`) per the documentation steering rule.
   INV-3 byte-identical guarantee for the whole office container.
 - Consequences: an envelope recipe (small, text, stored as a tracked file that
   diffs cheaply between saves) is required; repack writes recorded header fields
-  verbatim. For a DEFLATE member the writer VERIFIES at ingest that re-DEFLATE
-  reproduces the original compressed bytes; where it cannot, the writer stores
-  the member's ORIGINAL COMPRESSED bytes verbatim (`stored_compressed`, size cost,
-  byte-identity kept) or FAILS with a typed error. It NEVER re-emits an
-  originally-DEFLATEd member as STORED (that changes the method field and
-  compressed bytes and would silently downgrade to Option B), so byte-identity is
-  preserved in every success case.
+  verbatim. For a DEFLATE member the writer verifies at ingest whether it can
+  reproduce the original compressed bytes; where it cannot, the compressed
+  stream is stored in a content-addressed blob referenced by `compressed_sha256`.
+  It NEVER re-emits an originally-DEFLATEd member as STORED (that changes the
+  method field and compressed bytes and would silently downgrade to Option B).
+  See the authoritative contract in `FORMAT.md` section 8.
 - Alternatives rejected: Option B (semantic-only identity, re-zip from parts)
   downgrades the guarantee to "same logical document, different bytes", breaking
   the trust property that makes Walrus a safe round-trip store.
@@ -108,11 +108,13 @@ ASCII only (`->`, `<->`, `<=`, `>=`, `--`) per the documentation steering rule.
 - Decision: the document-group, envelope-recipe, version-alignment, and
   binary-member rules are written into FORMAT.md FIRST (via
   `format-change-proposal.md`, pasted in and reviewed) BEFORE any office code
-  lands. The additions are OPTIONAL and backward-compatible, so old archives
-  still conform and group-unaware readers degrade safely.
+  lands. This prerequisite is now complete on `feature/office-container`.
+  Implementation must continue test-first. The additions are OPTIONAL and
+  backward-compatible, so old archives still conform and group-unaware readers
+  degrade safely.
 - Consequences: delivery order is spec -> additive types -> ingest -> repack ->
-  CLI -> fixtures/tests (requirements.md section 5); the implementation phase
-  begins by landing the spec revision.
+  CLI -> fixtures/tests (requirements.md section 5); the spec-first phase is
+  complete and the implementation phase has begun.
 - Alternatives rejected: coding the group/envelope shape first and
   back-documenting it -- violates INV-1 and risks code and spec diverging.
 

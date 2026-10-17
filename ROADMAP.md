@@ -87,11 +87,14 @@ passed and 0 failed. Report: `.gate/gate.report.log`.
    every selected file, and report matches grouped by version with timestamps.
    Specified in CLI-DESIGN section 5.8; combining the flag with a selector is
    RC 2.
-7. OFFICE-CONTAINER (ODF / OOXML): store an office document by unpacking its
-   inner zip parts, tracking each as a grouped file, repacking byte-identically
-   on extract. Approved, design-reviewed planning at
-   `docs/proposals/office-container/`. Start with the spec-first FORMAT.md change
-   in `format-change-proposal.md`, in a FRESH worktree off latest `main`.
+7. [IMPLEMENTED; scoped validation in progress] OFFICE-CONTAINER (ODF / OOXML):
+   on `feature/office-container` in a fresh worktree based on the then-current
+   `main`, the spec, grouped ZIP member ingest, versioning, binary blob storage,
+   byte-identical repack, opt-in CLI routing, and generated minimal ODF/OOXML
+   fixtures have been implemented test-first. Scoped feature-boundary,
+   structural storage/delta, and clippy/build checks plus the owner's full gate
+   remain before merge.
+   Walker integration is deliberately deferred to a separate phase.
 8. WALKER git-history source and the Automerge/Yrs multi-format history player,
    both behind the source-agnostic `HistorySource` trait -- Walker-side /
    feature-gated only, never into `walrus-fmt` (invariant 2). Design notes under
@@ -104,8 +107,10 @@ passed and 0 failed. Report: `.gate/gate.report.log`.
 ### Suggested next move
 
 Tier A and B are full-gate verified. Tier C item 6 is implemented on its
-feature branch; run the owner full gate before merging. Then choose an optional
-Tier C feature in a fresh worktree based on the latest `main`.
+feature branch; run the owner full gate before merging. Office-container is
+being completed on its own feature branch; finish scoped validation and the
+owner full gate before merging. Then choose another optional Tier C feature in a
+fresh worktree based on the latest `main`.
 
 ## Design decisions locked (see CLI-DESIGN.md)
 
@@ -278,16 +283,11 @@ Shape (as shipped):
 
 ## Future features -- DESIGNED, not yet started
 
-- OFFICE-CONTAINER (ODF / OOXML): store an office document in a `.wal` by
-  UNPACKING it into its inner zip parts, tracking each part as its own file
-  grouped as one logical document, and REPACKING byte-identically on extract.
-  Approved, design-reviewed planning lives at `docs/proposals/office-container/`
-  (requirements, design, a spec-first FORMAT.md change proposal, ADRs, and a
-  phase-two Walker view-only playback plan blocked on phase one). PLANNING ONLY
-  -- no code yet. When development starts: create a FRESH worktree off the
-  latest `main` (per the "Branch hygiene" rule in
-  `.kiro/steering/project-conventions.md`) and begin with the spec-first
-  FORMAT.md change in `format-change-proposal.md`.
+- WALKER office-document playback (phase two): view historical ODF/OOXML member
+  content in Walker through its source/player surfaces. This is intentionally
+  deferred until phase one is validated and merged; it must remain Walker-side
+  and must not add GUI dependencies to `walrus-fmt`. Planning lives in
+  `docs/proposals/office-container/walker-playback.md`.
 
 ## Deferred / future ideas (not scheduled)
 

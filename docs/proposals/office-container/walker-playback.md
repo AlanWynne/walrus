@@ -538,8 +538,9 @@ renders images as placeholders (section 7).
   across platforms); the `rfd` native dialog if an office group is ever opened via
   OS file picker (WHY: OS-native dialog is not headless-drivable, matching
   requirements-walker.md NFR-3). No functional behaviour is left manual.
-- Fixtures: small, captured ODT/DOCX inner XML parts (and tiny two-version office
-  archives for the harness) live under `tests/fixtures/`; tests are deterministic
+- Fixtures: deterministic, locally generated minimal ODT/DOCX packages (and tiny
+  two-version office archives for the harness) live under `tests/fixtures/`;
+  tests are deterministic
   (no HashMap iteration order, no system time, no files outside `tests/fixtures/`),
   per NFR / testing steering.
 

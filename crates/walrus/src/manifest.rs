@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::manifest_group::{validate_groups, DocumentGroup};
 use crate::wchg::Direction;
 
 /// Which variant of the format an archive is. Always a concrete `wal` or `wbl`
@@ -205,7 +206,7 @@ impl TrackedFile {
     }
 }
 
-/// The parsed `manifest.json` (archive-level fields plus the `files` array).
+/// The parsed `manifest.json` (archive-level fields, tracked files, and groups).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// Always `"walrus"`.
@@ -227,6 +228,9 @@ pub struct Manifest {
     /// The tracked files in this archive (authoritative directory). May be empty.
     #[serde(default)]
     pub files: Vec<TrackedFile>,
+    /// Optional logical document groups (FORMAT.md section 8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<DocumentGroup>,
 }
 
 impl Manifest {
@@ -244,6 +248,7 @@ impl Manifest {
             created: None,
             generator: None,
             files: Vec::new(),
+            groups: Vec::new(),
         }
     }
 
@@ -261,6 +266,18 @@ impl Manifest {
     /// Look up a tracked file by its id.
     pub fn file(&self, id: &str) -> Option<&TrackedFile> {
         self.files.iter().find(|f| f.id == id)
+    }
+
+    /// Iterate the logical document groups in manifest order.
+    pub fn groups(&self) -> impl Iterator<Item = &DocumentGroup> {
+        self.groups.iter()
+    }
+
+    /// Look up a document group by id or logical name.
+    pub fn group(&self, selector: &str) -> Option<&DocumentGroup> {
+        self.groups
+            .iter()
+            .find(|group| group.id == selector || group.name == selector)
     }
 
     /// Validate structural invariants across the archive and every tracked file.
@@ -299,6 +316,7 @@ impl Manifest {
         for file in &self.files {
             self.validate_file(file)?;
         }
+        validate_groups(self)?;
         Ok(())
     }
 
@@ -336,6 +354,9 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::{DocumentGroup, DocumentVersionRow, OfficeKind};
 
     fn sample_file(variant: Variant, count: usize) -> TrackedFile {
         TrackedFile::new("a1b2c3", "src/document.txt", variant, count)
@@ -372,6 +393,167 @@ mod tests {
         let back: Manifest = serde_json::from_str(&json).expect("parse");
         assert_eq!(back, m);
         assert_eq!(back.files.len(), 3);
+    }
+
+    #[test]
+    fn manifest_preserves_optional_document_groups() {
+        let input = serde_json::json!({
+            "format": "walrus",
+            "spec_version": "0.1",
+            "variant": "wal",
+            "base_role": "original",
+            "log_direction": "forward",
+            "files": [],
+            "groups": [{
+                "id": "g0",
+                "name": "report.odt",
+                "kind": "odf",
+                "member_ids": ["f0"],
+                "envelope_id": "f1",
+                "version_map": [{
+                    "doc_version": 0,
+                    "envelope_index": 0,
+                    "members": { "f0": 0 }
+                }]
+            }]
+        });
+
+        let manifest: Manifest =
+            serde_json::from_value(input.clone()).expect("parse grouped manifest");
+        let output = serde_json::to_value(manifest).expect("serialise grouped manifest");
+
+        assert_eq!(output["groups"], input["groups"]);
+    }
+
+    #[test]
+    fn manifest_without_groups_remains_backward_compatible() {
+        let input = serde_json::json!({
+            "format": "walrus",
+            "spec_version": "0.1",
+            "variant": "wal",
+            "base_role": "original",
+            "log_direction": "forward",
+            "files": []
+        });
+
+        let manifest: Manifest = serde_json::from_value(input).expect("parse legacy manifest");
+
+        assert_eq!(manifest.groups().count(), 0);
+        manifest.validate().expect("legacy manifest remains valid");
+        let output = serde_json::to_value(manifest).expect("serialise legacy manifest");
+        assert!(output.get("groups").is_none());
+    }
+
+    #[test]
+    fn manifest_rejects_group_references_to_missing_files() {
+        let input = serde_json::json!({
+            "format": "walrus",
+            "spec_version": "0.1",
+            "variant": "wal",
+            "base_role": "original",
+            "log_direction": "forward",
+            "files": [],
+            "groups": [{
+                "id": "g0",
+                "name": "report.odt",
+                "kind": "odf",
+                "member_ids": ["missing-member"],
+                "envelope_id": "missing-envelope",
+                "version_map": [{
+                    "doc_version": 0,
+                    "envelope_index": 0,
+                    "members": { "missing-member": 0 }
+                }]
+            }]
+        });
+        let manifest: Manifest = serde_json::from_value(input).expect("parse grouped manifest");
+
+        assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn manifest_rejects_noncurrent_and_out_of_range_group_member_indices() {
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.files.push(TrackedFile::new(
+            "envelope",
+            "report/envelope.json",
+            Variant::Wal,
+            1,
+        ));
+        manifest.files.push(TrackedFile::new(
+            "content",
+            "report/content.xml",
+            Variant::Wal,
+            1,
+        ));
+        manifest.groups.push(DocumentGroup {
+            id: "g0".to_string(),
+            name: "report.odt".to_string(),
+            kind: OfficeKind::Odf,
+            member_ids: vec!["content".to_string()],
+            envelope_id: "envelope".to_string(),
+            version_map: vec![DocumentVersionRow {
+                doc_version: 0,
+                envelope_index: 0,
+                members: BTreeMap::from([("content".to_string(), 1)]),
+            }],
+        });
+
+        assert!(
+            manifest.validate().is_err(),
+            "current member index must be zero"
+        );
+
+        manifest.groups[0].version_map[0]
+            .members
+            .insert("content".to_string(), 0);
+        manifest.groups[0].version_map.push(DocumentVersionRow {
+            doc_version: 1,
+            envelope_index: 1,
+            members: BTreeMap::from([("content".to_string(), 2)]),
+        });
+        assert!(
+            manifest.validate().is_err(),
+            "member index cannot exceed that file's version count"
+        );
+    }
+
+    #[test]
+    fn manifest_accepts_a_valid_group_alignment() {
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.files.push(TrackedFile::new(
+            "envelope",
+            "report/envelope.json",
+            Variant::Wal,
+            1,
+        ));
+        manifest.files.push(TrackedFile::new(
+            "content",
+            "report/content.xml",
+            Variant::Wal,
+            1,
+        ));
+        manifest.groups.push(DocumentGroup {
+            id: "g0".to_string(),
+            name: "report.odt".to_string(),
+            kind: OfficeKind::Odf,
+            member_ids: vec!["content".to_string()],
+            envelope_id: "envelope".to_string(),
+            version_map: vec![
+                DocumentVersionRow {
+                    doc_version: 0,
+                    envelope_index: 0,
+                    members: BTreeMap::from([("content".to_string(), 0)]),
+                },
+                DocumentVersionRow {
+                    doc_version: 1,
+                    envelope_index: 1,
+                    members: BTreeMap::from([("content".to_string(), 1)]),
+                },
+            ],
+        });
+
+        manifest.validate().expect("valid group alignment");
     }
 
     #[test]

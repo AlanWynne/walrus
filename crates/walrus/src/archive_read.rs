@@ -27,6 +27,17 @@ pub(super) fn read_members(tar_bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>
     Ok(members)
 }
 
+/// Collect content-addressed payload members from the tar-member map.
+pub(super) fn read_blobs(members: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    members
+        .iter()
+        .filter_map(|(path, content)| {
+            path.strip_prefix("blobs/")
+                .map(|hash| (hash.to_string(), content.clone()))
+        })
+        .collect()
+}
+
 /// Collect one tracked file's base and parsed `.wchg` from the member map.
 pub(super) fn read_tracked_file(
     tracked: &TrackedFile,

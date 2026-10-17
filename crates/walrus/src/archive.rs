@@ -9,12 +9,15 @@
 //! directory.
 
 use std::path::Path;
+use std::{collections::BTreeMap, fmt};
 
+#[path = "archive_groups.rs"]
+mod archive_groups;
 #[path = "archive_read.rs"]
 mod archive_read;
 #[cfg(test)]
 use archive_read::bound_tail_bytes;
-use archive_read::{read_members, read_tracked_file, wchg_member_name};
+use archive_read::{read_blobs, read_members, read_tracked_file, wchg_member_name};
 
 use crate::manifest::{Manifest, TrackedFile};
 use crate::record::ChangeRecord;
@@ -68,10 +71,27 @@ pub(crate) struct ArchiveFile {
 /// Open with [`Archive::open`] (from a path) or [`Archive::read`] (from the
 /// whole compressed container bytes). This type exposes read-only accessors
 /// only; mutation, reconstruction, and conversion are later FRs.
-#[derive(Debug)]
 pub struct Archive {
     manifest: Manifest,
     files: Vec<ArchiveFile>,
+    blobs: BTreeMap<String, Vec<u8>>,
+}
+
+impl fmt::Debug for Archive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Archive")
+            .field("manifest", &self.manifest)
+            .field("files", &self.files)
+            .field("blob_count", &self.blobs.len())
+            .field(
+                "blob_bytes",
+                &self
+                    .blobs
+                    .values()
+                    .fold(0usize, |total, blob| total.saturating_add(blob.len())),
+            )
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for ArchiveFile {
@@ -96,6 +116,7 @@ impl Archive {
         Archive {
             manifest,
             files: Vec::new(),
+            blobs: BTreeMap::new(),
         }
     }
 
@@ -116,12 +137,17 @@ impl Archive {
             .ok_or(WalrusError::MissingMember("manifest.json"))?;
         let manifest: Manifest = serde_json::from_slice(manifest_json)?;
         manifest.validate()?;
+        let blobs = read_blobs(&members);
 
         let mut files = Vec::with_capacity(manifest.files.len());
         for tracked in &manifest.files {
             files.push(read_tracked_file(tracked, &members)?);
         }
-        Ok(Archive { manifest, files })
+        Ok(Archive {
+            manifest,
+            files,
+            blobs,
+        })
     }
 
     /// Open an archive from a path: read the file, then delegate to
@@ -256,7 +282,7 @@ impl Archive {
                 records: &f.records,
             })
             .collect();
-        write::write_archive(&self.manifest, &parts)
+        write::write_archive(&self.manifest, &parts, &self.blobs)
     }
 
     /// Write this archive to `path` TRANSACTIONALLY: serialise to the full
@@ -284,14 +310,35 @@ impl Archive {
     /// Build an [`Archive`] from a manifest and parsed per-file entries, for the
     /// `convert` mutate path (which returns a NEW archive). Not part of the
     /// public API. The caller guarantees the manifest and files share ids.
-    pub(crate) fn from_directories(manifest: Manifest, files: Vec<ArchiveFile>) -> Archive {
-        Archive { manifest, files }
+    pub(crate) fn from_directories(
+        manifest: Manifest,
+        files: Vec<ArchiveFile>,
+        blobs: BTreeMap<String, Vec<u8>>,
+    ) -> Archive {
+        Archive {
+            manifest,
+            files,
+            blobs,
+        }
     }
 
     /// Read-only access to the parsed per-file entries, for the sibling
     /// `mutate_convert` module. Not part of the public API.
     pub(crate) fn files_ref(&self) -> &[ArchiveFile] {
         &self.files
+    }
+
+    /// Read-only access to content-addressed office payloads for sibling
+    /// conversion and extraction modules.
+    pub(crate) fn blobs_ref(&self) -> &BTreeMap<String, Vec<u8>> {
+        &self.blobs
+    }
+
+    /// Mutable access to content-addressed office payloads for the office
+    /// ingest module.
+    #[cfg(feature = "office")]
+    pub(crate) fn blobs_mut(&mut self) -> &mut BTreeMap<String, Vec<u8>> {
+        &mut self.blobs
     }
 
     /// Mutable access to the manifest, for the sibling `mutate` module. Not
@@ -334,7 +381,11 @@ impl Archive {
                 records,
             })
             .collect();
-        Archive { manifest, files }
+        Archive {
+            manifest,
+            files,
+            blobs: BTreeMap::new(),
+        }
     }
 }
 
@@ -931,6 +982,20 @@ mod write_tests {
     }
 
     #[test]
+    fn write_then_read_round_trips_content_addressed_blob_members() {
+        let mut original = archive_from(Variant::Wal, &[]);
+        let hash = "b".repeat(64);
+        original
+            .blobs
+            .insert(hash, b"binary office payload".to_vec());
+
+        let bytes = original.to_bytes().expect("serialize archive with blob");
+        let reopened = Archive::read(&bytes).expect("read archive with blob");
+
+        assert_eq!(reopened.blobs, original.blobs);
+    }
+
+    #[test]
     fn written_container_is_zstd_magic_and_the_reader_sniffs_it() {
         // INV-5 at the writer boundary: the emitted codec is what the reader
         // sniffs. The first bytes are the zstd magic, and `Archive::read`
@@ -989,6 +1054,11 @@ mod write_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::{
+        Checkpoint, Direction, DocumentGroup, DocumentVersionRow, OfficeKind, TrackedFile, Variant,
+    };
 
     #[test]
     fn wchg_member_name_bounds_a_deep_path_to_ustar_legal_length() {
@@ -1022,5 +1092,120 @@ mod tests {
         assert!(out.chars().all(|c| c == '\u{00E9}'), "no split char");
         // Within-max input is returned unchanged.
         assert_eq!(bound_tail_bytes("abc", 10), "abc");
+    }
+
+    #[test]
+    fn archive_resolves_document_groups_by_id_and_name() {
+        let mut manifest = Manifest::new(Variant::Wal);
+        manifest.groups.push(DocumentGroup {
+            id: "g0".to_string(),
+            name: "report.odt".to_string(),
+            kind: OfficeKind::Odf,
+            member_ids: Vec::new(),
+            envelope_id: "f0".to_string(),
+            version_map: vec![DocumentVersionRow {
+                doc_version: 0,
+                envelope_index: 0,
+                members: BTreeMap::new(),
+            }],
+        });
+        let archive = Archive::new(manifest);
+
+        assert_eq!(archive.groups().count(), 1);
+        assert_eq!(
+            archive.group("g0").map(|group| group.name.as_str()),
+            Some("report.odt")
+        );
+        assert_eq!(
+            archive.group("report.odt").map(|group| group.id.as_str()),
+            Some("g0")
+        );
+    }
+
+    #[test]
+    fn archive_resolves_group_versions_from_envelope_checkpoints_and_timestamps() {
+        let mut manifest = Manifest::new(Variant::Wal);
+        let mut envelope = TrackedFile::new_with_direction(
+            "env",
+            "report.odt/envelope.json",
+            Direction::Forward,
+            2,
+        );
+        envelope.checkpoints.push(Checkpoint {
+            index: 2,
+            label: "oldest".to_string(),
+        });
+        manifest.files.push(envelope);
+        manifest.groups.push(DocumentGroup {
+            id: "g0".to_string(),
+            name: "report.odt".to_string(),
+            kind: OfficeKind::Odf,
+            member_ids: Vec::new(),
+            envelope_id: "env".to_string(),
+            version_map: (0..=2)
+                .map(|doc_version| DocumentVersionRow {
+                    doc_version,
+                    envelope_index: doc_version,
+                    members: BTreeMap::new(),
+                })
+                .collect(),
+        });
+
+        let mut first = ChangeRecord::splice(0, 0, "v1");
+        first.ts = Some("2026-01-01T00:00:05Z".to_string());
+        let mut second = ChangeRecord::splice(0, 0, "v2");
+        second.ts = Some("2026-01-01T00:00:09Z".to_string());
+        let archive = Archive {
+            manifest,
+            files: vec![ArchiveFile {
+                id: "env".to_string(),
+                base: Vec::new(),
+                header: WchgHeader::new(Direction::Forward, 0, "envelope.json", "utf-8", 2),
+                records: vec![first, second],
+            }],
+            blobs: BTreeMap::new(),
+        };
+
+        let timestamp =
+            crate::timestamp::parse_ts_epoch("2026-01-01T00:00:06Z").expect("parse timestamp");
+        assert_eq!(
+            archive
+                .resolve_group_version("g0", Version::Label("oldest".to_string()))
+                .expect("resolve checkpoint")
+                .doc_version,
+            2
+        );
+        assert_eq!(
+            archive
+                .resolve_group_version("report.odt", Version::Timestamp(timestamp))
+                .expect("resolve timestamp")
+                .doc_version,
+            1
+        );
+        assert_eq!(
+            archive
+                .resolve_group_version("g0", Version::Current)
+                .expect("resolve current")
+                .doc_version,
+            0
+        );
+        assert_eq!(
+            archive
+                .resolve_group_version("g0", Version::Original)
+                .expect("resolve oldest")
+                .doc_version,
+            2
+        );
+        assert_eq!(
+            archive
+                .resolve_group_version("g0", Version::Relative(1))
+                .expect("resolve relative")
+                .doc_version,
+            1
+        );
+        assert!(matches!(
+            archive.resolve_group_version("missing", Version::Current),
+            Err(WalrusError::UnknownDocumentGroup { .. })
+        ));
     }
 }

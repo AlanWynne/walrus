@@ -11,6 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use walrus_fmt::{Archive, FileId, Version, WalrusError};
 
 use crate::mask;
@@ -43,23 +44,53 @@ pub fn run(args: &ExtractArgs) -> Result<u8> {
     let archive = Archive::open(&args.archive)
         .with_context(|| format!("opening archive {}", args.archive.display()))?;
 
-    let selected: Vec<String> = archive
-        .files()
-        .map(|f| f.name.clone())
-        .filter(|name| match &args.mask {
-            Some(m) => mask::matches(m, name),
+    let selected_groups: Vec<String> = archive
+        .groups()
+        .filter(|group| match &args.mask {
+            Some(mask) => mask::matches(mask, &group.name),
             None => true,
         })
+        .map(|group| group.name.clone())
         .collect();
 
+    #[cfg(not(feature = "office"))]
+    if !selected_groups.is_empty() {
+        anyhow::bail!("office support not built; rebuild this CLI with --features office");
+    }
+
+    let mut grouped_file_ids = HashSet::new();
+    for name in &selected_groups {
+        if let Some(group) = archive.group(name) {
+            grouped_file_ids.insert(group.envelope_id.as_str());
+            grouped_file_ids.extend(group.member_ids.iter().map(String::as_str));
+        }
+    }
+    let selected_files: Vec<String> = archive
+        .files()
+        .filter(|file| {
+            !grouped_file_ids.contains(file.id.as_str())
+                && match &args.mask {
+                    Some(mask) => mask::matches(mask, &file.name),
+                    None => true,
+                }
+        })
+        .map(|file| file.name.clone())
+        .collect();
+    let selected_count = selected_groups.len() + selected_files.len();
+
     // extract with a mask (or over an empty archive) that matches nothing -> RC 8.
-    if selected.is_empty() {
+    if selected_count == 0 {
         eprintln!("walx: no tracked file matches");
         return Ok(8);
     }
 
     let mut worst: u8 = 0;
-    for name in &selected {
+    #[cfg(feature = "office")]
+    for name in &selected_groups {
+        let code = extract_group_one(&archive, name, args)?;
+        worst = worst.max(code);
+    }
+    for name in &selected_files {
         let code = extract_one(&archive, name, args)?;
         worst = worst.max(code);
     }
@@ -87,15 +118,35 @@ fn extract_one(archive: &Archive, name: &str, args: &ExtractArgs) -> Result<u8> 
 
     let (bytes, code) = reconstruct_with_fallback(archive, &file_id, name, &args.selector)?;
 
+    write_target(&target, &bytes)?;
+    Ok(code)
+}
+
+#[cfg(feature = "office")]
+fn extract_group_one(archive: &Archive, name: &str, args: &ExtractArgs) -> Result<u8> {
+    let target = match resolve_target(name, args) {
+        Ok(path) => path,
+        Err(code) => return Ok(code),
+    };
+    if target.exists() && !args.force {
+        eprintln!("walx: {name}: target already exists (pass --force to overwrite)");
+        return Ok(2);
+    }
+    let (bytes, code) = reconstruct_group_with_fallback(archive, name, &args.selector)?;
+    write_target(&target, &bytes)?;
+    Ok(code)
+}
+
+fn write_target(target: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating directory {}", parent.display()))?;
     }
     let mut file =
-        std::fs::File::create(&target).with_context(|| format!("creating {}", target.display()))?;
-    file.write_all(&bytes)
+        std::fs::File::create(target).with_context(|| format!("creating {}", target.display()))?;
+    file.write_all(bytes)
         .with_context(|| format!("writing {}", target.display()))?;
-    Ok(code)
+    Ok(())
 }
 
 /// Resolve the stored name to a writable path beneath the output directory,
@@ -143,6 +194,27 @@ pub fn reconstruct_with_fallback(
             Ok((original, 4))
         }
         Err(e) => Err(anyhow::Error::new(e).context(format!("reconstructing '{name}'"))),
+    }
+}
+
+#[cfg(feature = "office")]
+pub(crate) fn reconstruct_group_with_fallback(
+    archive: &Archive,
+    group: &str,
+    selector: &Selector,
+) -> Result<(Vec<u8>, u8)> {
+    match archive.extract_office(group, selector.to_version()) {
+        Ok(bytes) => Ok((bytes, 0)),
+        Err(WalrusError::VersionRange { .. }) if selector.is_numeric_index() => {
+            let original = archive
+                .extract_office(group, Version::Original)
+                .with_context(|| format!("reconstructing original office group '{group}'"))?;
+            eprintln!("walx: {group}: index beyond last; wrote the original version");
+            Ok((original, 4))
+        }
+        Err(error) => {
+            Err(anyhow::Error::new(error).context(format!("reconstructing office group '{group}'")))
+        }
     }
 }
 

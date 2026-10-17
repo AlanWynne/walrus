@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use walrus_fmt::{Archive, FileId};
 
+#[cfg(feature = "office")]
+use crate::extract::reconstruct_group_with_fallback;
 use crate::extract::reconstruct_with_fallback;
 use crate::mask;
 use crate::selector::Selector;
@@ -35,20 +37,55 @@ pub fn run(args: &CatArgs) -> Result<u8> {
     let archive = Archive::open(&args.archive)
         .with_context(|| format!("opening archive {}", args.archive.display()))?;
 
+    let matching_groups: Vec<String> = archive
+        .groups()
+        .filter(|group| mask::matches(&args.file, &group.name))
+        .map(|group| group.name.clone())
+        .collect();
+
+    #[cfg(not(feature = "office"))]
+    if !matching_groups.is_empty() {
+        anyhow::bail!("office support not built; rebuild this CLI with --features office");
+    }
+
+    #[cfg(feature = "office")]
+    let grouped_file_ids: std::collections::HashSet<&str> = matching_groups
+        .iter()
+        .filter_map(|name| archive.group(name))
+        .flat_map(|group| {
+            std::iter::once(group.envelope_id.as_str())
+                .chain(group.member_ids.iter().map(String::as_str))
+        })
+        .collect();
     let matched: Vec<String> = archive
         .files()
-        .map(|f| f.name.clone())
-        .filter(|name| mask::matches(&args.file, name))
+        .filter(|file| {
+            #[cfg(feature = "office")]
+            if grouped_file_ids.contains(file.id.as_str()) {
+                return false;
+            }
+            mask::matches(&args.file, &file.name)
+        })
+        .map(|file| file.name.clone())
         .collect();
 
     // cat requires EXACTLY ONE match; zero or more than one is RC 2 (AC3).
-    if matched.len() != 1 {
+    if matching_groups.len() + matched.len() != 1 {
         eprintln!(
             "walx: cat selects exactly one file; '{}' matched {}",
             args.file,
-            matched.len()
+            matching_groups.len() + matched.len()
         );
         return Ok(2);
+    }
+
+    #[cfg(feature = "office")]
+    if let Some(group) = matching_groups.first() {
+        let (bytes, code) = reconstruct_group_with_fallback(&archive, group, &args.selector)?;
+        std::io::stdout()
+            .write_all(&bytes)
+            .context("writing reconstructed office bytes to stdout")?;
+        return Ok(code);
     }
 
     let name = &matched[0];

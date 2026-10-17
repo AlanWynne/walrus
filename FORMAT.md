@@ -161,6 +161,7 @@ keeps even that path ustar-legal.
 | `manifest.json`             | yes      | JSON manifest describing the archive and every tracked file (section 3) |
 | `files/<id>/base`           | yes      | The base document bytes for file `<id>` (original for `.wal`, current for `.wbl`) |
 | `files/<id>/<name>.wchg`    | yes      | The per-file change log for file `<id>` (section 4)                   |
+| `blobs/<sha256>`            | no       | Content-addressed opaque member bytes referenced by a document-group envelope (section 8) |
 | `meta/`                     | no       | Optional free-form sidecar files (e.g. author notes)                  |
 
 Notes:
@@ -193,7 +194,8 @@ Notes:
 ## 3. manifest.json
 
 The manifest describes the archive as a whole and carries a `files` array with
-one entry per tracked file.
+one entry per tracked file. It MAY also carry document groups, as specified in
+section 8; archives without groups retain the existing interpretation.
 
 ```json
 {
@@ -547,3 +549,172 @@ Still open:
 - The exact record format, if any, that `condense` / generation re-basing should
   leave behind to mark a re-baseline point in a very long log (currently a
   re-base simply folds the dropped record into the base and emits no marker).
+
+## 8. Document groups (office containers)
+
+A Walrus archive MAY represent an OpenDocument Format (ODF) or Office Open XML
+(OOXML / OPC) ZIP document as a group of independently tracked text members and
+content-addressed binary members. Legacy OLE2 / CFBF files (`.doc`, `.xls`,
+`.ppt`) are outside this mechanism. A group is optional metadata; an archive
+without groups remains an ordinary multi-file archive.
+
+A reader that does not implement groups MUST continue to read the group's
+tracked files as ordinary files and MUST ignore the optional `groups` field.
+It cannot repack a grouped office document, but the group metadata MUST NOT make
+the archive unreadable.
+
+### 8.1 Manifest groups
+
+The manifest MAY contain a top-level `groups` array. Each entry has this shape:
+
+```json
+{
+  "id": "g0",
+  "name": "report.odt",
+  "kind": "odf",
+  "member_ids": ["f0", "f1"],
+  "envelope_id": "f2",
+  "version_map": [
+    { "doc_version": 0, "envelope_index": 0, "members": { "f0": 0, "f1": 0 } }
+  ]
+}
+```
+
+Field rules:
+- `id` is a stable, archive-unique opaque identifier. Writers SHOULD allocate
+  sequential `g0`, `g1`, ... identifiers; readers MUST treat it as opaque.
+- `name` is the logical document's user-visible relative path.
+- `kind` is `odf` or `ooxml`.
+- `member_ids` is the union of tracked TEXT member file ids present in any
+  document version. Each id MUST reference a file in `files`. Binary members
+  are not tracked files and are referenced by content hash in the envelope.
+  The envelope file itself MUST NOT appear in `member_ids`.
+- `envelope_id` MUST reference the tracked UTF-8 text file containing the
+  document's envelope recipe.
+- `version_map` is an ordered array with one row per retained document version,
+  including `doc_version: 0`. Each row's `members` object maps exactly the
+  tracked text member ids present at that document version to their individual
+  file version indices. `envelope_index` maps the envelope file to its index for
+  this document version. A member added later MUST be absent from earlier rows;
+  a removed member MUST be absent from rows at and after its removal.
+- Document version zero is current. Every tracked text member present in row
+  zero MUST map to file index zero. Every id in every row MUST also occur in
+  `member_ids`, reference an existing file, and map to an index in that file's
+  valid range. The `envelope_index` MUST also be valid for `envelope_id`.
+
+The `members` map aligns tracked text files only. The envelope index is recorded
+separately in `envelope_index`. Binary payloads are immutable content-addressed
+blobs; each version's envelope names the hashes present at that version. The
+envelope is authoritative for the complete ZIP membership and order, including
+both text and binary entries. Its text-member ids MUST agree with the row's
+`members` key set.
+
+### 8.2 Envelope recipe and exact ZIP preservation
+
+The file named by `envelope_id` MUST contain deterministic UTF-8 JSON. It MUST
+describe the complete ZIP member order and all ZIP metadata needed to reproduce
+the original byte stream. Each ZIP member occurs exactly once in the ordered
+`zip.members` array and has exactly one logical content reference:
+- `member_id` references a tracked text file and is present in the matching
+  document-version row; or
+- `content_sha256` references a binary member's uncompressed bytes at
+  `blobs/<content_sha256>`.
+
+The JSON object MUST contain `"schema": "walrus-office-envelope"`,
+`"schema_version": "0.1"`, `"kind"` (`"odf"` or `"ooxml"`), and a `"zip"`
+object. The `zip` object MUST contain `members` (the ordered array) and
+`archive_prefix_hex`, `archive_comment_hex`, `central_directory_suffix_hex`,
+`end_records_hex`, and `archive_trailing_hex` (the exact corresponding
+archive-level bytes encoded as lowercase hexadecimal; empty strings mean no such
+bytes). A member object
+MUST contain `path`,
+`method` (`"store"` or `"deflate"`), `crc32`, `compressed_size`,
+`uncompressed_size`, `dos_time`, `dos_date`, `gp_flags`, `version_made_by`,
+`version_needed`, `external_attrs`, `internal_attrs`, `local_extra_hex`, and
+`central_extra_hex`, `local_header_hex`, and `central_header_hex`. The integer
+fields are the unsigned raw ZIP field values; the `*_hex` fields contain the
+exact corresponding bytes as lowercase hexadecimal. The local and central
+header fields include their fixed header bytes, original filename bytes, and
+extra fields; the explicit values and extra-field strings are also recorded for
+validation and inspection. Exactly one of `member_id` and `content_sha256` MUST
+be present. `data_descriptor_hex` is present only when the original member has
+a data descriptor. For a DEFLATE stream reproducible from its uncompressed
+content, `deflate_level` records the level needed to reproduce it; otherwise
+`compressed_sha256` references the original stream. `end_records_hex` contains
+the exact end-of-central-directory record bytes. Array order is significant;
+JSON object keys MUST be serialized in the fixed schema order, with unknown keys
+retained verbatim by readers and writers.
+
+A member entry MAY additionally carry `compressed_sha256`, referencing the
+original compressed data stream at `blobs/<compressed_sha256>`. This is used
+when the implementation cannot reproduce a DEFLATE stream byte-for-byte from
+the logical member content. It is payload metadata, not a second ZIP member.
+
+Each entry records its path, compression method, CRC-32, compressed and
+uncompressed sizes, DOS timestamp, general-purpose flags, version-made-by and
+version-needed fields, external and internal attributes, local and central
+directory extra fields, and data-descriptor bytes when present. The envelope
+also records the archive comment and any other archive-level bytes needed to
+reproduce the ZIP exactly. Fields not understood by a writer MUST be retained
+verbatim; a writer that cannot preserve an input ZIP feature MUST reject that
+input rather than claim byte-identical support.
+
+A DEFLATE stream MUST be reproduced byte-for-byte from the reconstructed text
+member and recorded parameters. At ingest, a writer MUST verify this
+reproducibility. If it cannot reproduce the stream, it MUST store the original
+compressed stream as a content-addressed blob and record its hash in
+`compressed_sha256`; it MUST NOT replace DEFLATE with STORED. A STORED member
+MUST remain STORED. The writer MUST preserve the exact local headers,
+central-directory records, data descriptors, archive comment, and member
+ordering, updating offsets only as required by the recorded layout. Unsupported
+structures, including encryption or a ZIP64 structure not fully preserved by
+the implementation, MUST produce a typed error.
+
+The envelope is itself a tracked text file, so edits to member contents or ZIP
+metadata are versioned through the ordinary splice path. Repacking a document
+version MUST reproduce the exact office-file bytes supplied for that version.
+
+### 8.3 Office-kind conventions and detection
+
+ODF is identified from ZIP content, including an ODF media-type `mimetype`
+member. Its `mimetype` member MUST be first and STORED. OOXML / OPC is identified
+by the `[Content_Types].xml` member. File extensions are hints only. A ZIP that
+does not satisfy either signature MUST NOT be classified as an office document.
+OLE2 magic MUST be rejected as an unsupported legacy office format, not treated
+as a ZIP or accepted as an opaque office document.
+
+### 8.4 Version alignment and membership
+
+For document version `k`, a reader MUST select the row whose `doc_version` is
+`k`, reconstruct each tracked text member at its mapped file index, and use the
+envelope reconstructed for that same document version. Only members named by
+that envelope are emitted; absent ids MUST NOT be guessed or substituted.
+Member order comes exclusively from `zip.members`. The envelope's tracked-file
+index MUST be the index recorded for `envelope_id` in the row's
+`envelope_index`.
+
+A member added at a later document save MUST NOT appear in earlier versions; a
+member removed at a later save MUST remain available in earlier versions.
+Re-basing or trimming a member's history MUST update every affected alignment
+index so it remains valid.
+
+### 8.5 Binary members
+
+Binary data MUST NOT be stored in a splice record. A writer MUST store each
+distinct binary body once at `blobs/<sha256-of-uncompressed-bytes>` and refer to
+it by `content_sha256`. An unchanged binary across document versions reuses the
+same blob; a changed binary gets a different blob. If exact repacking requires
+the original compressed stream, it is stored separately by `compressed_sha256`.
+These blobs are content-addressed by the exact bytes stored at their paths. This
+0.1 rule does not resolve the general binary-insert question in section 7;
+whole-blob versioned splice records remain out of scope.
+
+### 8.6 Conformance
+
+A reader implementing document groups MUST validate group identifiers, file
+references, version-map indices, and consistency between each row and its
+version's envelope. It MUST reconstruct only the text files mapped in that row
+and the blobs referenced by the envelope. A writer creating a group MUST write
+the tracked files, blobs, envelope, and manifest transactionally and MUST
+preserve the complete input office bytes on extraction at the corresponding
+version.

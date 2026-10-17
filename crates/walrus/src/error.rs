@@ -92,6 +92,70 @@ pub enum WalrusError {
         id: String,
     },
 
+    /// A document-group selector did not match a group in the manifest.
+    #[error("unknown document group: {selector}")]
+    UnknownDocumentGroup {
+        /// The group id or logical name that did not match.
+        selector: String,
+    },
+
+    /// An envelope-file index does not correspond to a retained group version.
+    #[error(
+        "document group '{group_id}' has no retained version for envelope index {envelope_index}"
+    )]
+    DocumentGroupVersionNotFound {
+        /// The owning group id.
+        group_id: String,
+        /// The envelope file index that had no group-version row.
+        envelope_index: usize,
+    },
+
+    /// An office envelope recipe failed structural validation.
+    #[error("invalid office envelope: {reason}")]
+    OfficeEnvelope {
+        /// Human-readable validation failure.
+        reason: String,
+    },
+
+    /// An OLE2 office document is outside the ZIP-based office scope.
+    #[error("unsupported legacy office format: {format}")]
+    UnsupportedOfficeFormat {
+        /// Detected legacy format family.
+        format: String,
+    },
+
+    /// A valid ZIP file did not contain an ODF or OOXML signature.
+    #[error("ZIP archive is not a recognised office document")]
+    UnrecognizedOfficeZip,
+
+    /// The ZIP-based office container could not be parsed or validated.
+    #[error("invalid office ZIP container: {reason}")]
+    OfficeZip {
+        /// Human-readable parsing or validation failure.
+        reason: String,
+    },
+
+    /// An office ZIP's total declared or observed uncompressed member data
+    /// exceeds the configured safety limit.
+    #[error(
+        "office ZIP uncompressed data exceeds the {limit}-byte limit (at least {actual} bytes)"
+    )]
+    OfficeUncompressedSizeLimit {
+        /// Declared or observed total uncompressed size.
+        actual: u64,
+        /// Maximum total uncompressed size accepted for one office document.
+        limit: u64,
+    },
+
+    /// A content-addressed office payload is missing or does not match its key.
+    #[error("invalid office blob '{hash}': {reason}")]
+    OfficeBlob {
+        /// Expected SHA-256 key.
+        hash: String,
+        /// Missing-payload or integrity failure.
+        reason: String,
+    },
+
     /// A splice referenced a byte offset outside the current document.
     #[error("splice out of bounds at offset {at} (document length {len})")]
     SpliceOutOfBounds {

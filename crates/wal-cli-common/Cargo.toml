@@ -23,6 +23,7 @@ default = []
 # playback-only embedder) links neither `regex` nor the regex search arm
 # (dependency boundary, invariant 2).
 search-regex = ["walrus-fmt/search-regex"]
+office = ["walrus-fmt/office"]
 
 [dev-dependencies]
 tempfile = "3"

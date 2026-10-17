@@ -25,6 +25,7 @@ mod encoding;
 mod error;
 mod invert;
 mod manifest;
+mod manifest_group;
 mod mutate;
 mod mutate_add;
 mod mutate_convert;
@@ -32,6 +33,13 @@ mod mutate_convert;
 mod mutate_i18n;
 mod mutate_remove;
 mod mutate_stamp;
+#[cfg(feature = "office")]
+mod office;
+#[cfg(feature = "office")]
+pub use office::detect_office;
+// The envelope model precedes the ZIP pipeline that will consume it.
+#[allow(dead_code)]
+pub(crate) mod office_envelope;
 mod rebase;
 mod reconstruct;
 mod record;
@@ -51,6 +59,7 @@ pub use error::{Result, WalrusError};
 pub use manifest::{
     Checkpoint, FileAttributes, Manifest, RebaseInfo, TrackedFile, Variant, Versions,
 };
+pub use manifest_group::{DocumentGroup, DocumentVersionRow, OfficeKind};
 pub use record::{ChangeRecord, Op};
 pub use search::{search_version, search_versions, Match, MatchMode, SearchOptions};
 pub use version::Version;

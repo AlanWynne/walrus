@@ -1,12 +1,12 @@
 # Office container -- Technical Design
 
-Status: DESIGN (planning, first iteration). Scope: HEAVY feature with a
-format-spec impact. All code paths below are in `crates/walrus` (`walrus-fmt`)
-unless noted; CLI touches are in `crates/walx` and `crates/walrus-cli`. This
-design is written to be implemented without further architectural decisions; the
-technology stack named here is LOCKED once approved. NO `.rs` is written and
-FORMAT.md is NOT edited by this task -- the normative spec text lives in the
-sibling `format-change-proposal.md` and is pasted into FORMAT.md FIRST (INV-1).
+Status: DESIGN (implementation started). Scope: HEAVY feature with a
+format-spec impact. All core code paths are in `crates/walrus` (`walrus-fmt`)
+unless noted; CLI touches are in `crates/walx` and `crates/walrus-cli`. The
+authoritative adopted format is FORMAT.md section 8. Its implementation
+clarifications supersede conflicting examples in the historical
+`format-change-proposal.md`; the technology choices below remain subject to
+verification against byte-identical behavior and the workspace MSRV.
 
 The companion documents are `requirements.md` (FR-OC1..FR-OC10),
 `format-change-proposal.md` (the spec-first FORMAT.md additions), and
@@ -19,12 +19,14 @@ The companion documents are `requirements.md` (FR-OC1..FR-OC10),
 | Constant | Value | Notes |
 |----------|-------|-------|
 | Cargo feature | `office` | MAY split into `container-odf` / `container-ooxml` later; one `office` gate to start. Mirrors the existing `diff` / `i18n` / `export-*` gating. |
-| ZIP crate | `zip = "2"` (pure-Rust) | CHOSEN below (section 8); exact minor pinned and MSRV-verified at implementation time. |
+| ZIP crate | `zip = "~3.0.0"` (pure-Rust) | MSRV-verified at 1.75.0; DEFLATE uses the pure-Rust `zlib-rs` backend with default features disabled. |
+| Hash/checksum/DEFLATE helpers | `sha2 = "0.10"`, `flate2 = "1"`, `crc32fast = "1"` | Optional with `office`; SHA-256 content addressing, CRC verification, and matching raw DEFLATE streams, using the same zlib-rs backend as `zip`. |
 | Workspace MSRV | 1.95 | Inherited (egui 0.36 set it); any crate forcing > 1.95 raises the WORKSPACE value and is recorded (follows the export-backend procedure). |
 | Office scope | ODF + OOXML (ZIP) only | OLE2 `.doc`/`.xls`/`.ppt` deferred. |
 | Identity | Option A: byte-identical repack via envelope recipe | Option B (semantic-only) rejected (section 9). |
 | Containerisation | Option 2: per-part grouped in the outer archive | Options 1 and 3 rejected (section 9). |
 | Envelope member | `envelope.json`, a tracked TEXT file in the group | Versioned alongside the parts. |
+| Maximum uncompressed ZIP size | 1 GiB total | Enforced against declared sizes before reading and against observed output while decompressing. |
 
 ---
 
@@ -132,8 +134,8 @@ alongside the existing `files` array):
       "member_ids": ["f0", "f1", "f2", "f3", "f4"],
       "envelope_id": "f5",
       "version_map": [
-        { "doc_version": 0, "members": { "f0": 0, "f1": 0, "f2": 0, "f3": 0, "f4": 0 } },
-        { "doc_version": 1, "members": { "f0": 0, "f1": 1, "f2": 0, "f3": 1, "f4": 0 } }
+        { "doc_version": 0, "envelope_index": 0, "members": { "f0": 0, "f1": 0, "f2": 0, "f3": 0, "f4": 0 } },
+        { "doc_version": 1, "envelope_index": 1, "members": { "f0": 0, "f1": 1, "f2": 0, "f3": 1, "f4": 0 } }
       ]
     }
   ]
@@ -202,7 +204,7 @@ only in a handful of fields (changed members' CRC32 / sizes / timestamps), so th
 net splice is tiny and the outer zstd compresses it again (FR-OC5 AC3).
 
 Concrete JSON sketch (the reconstructed CONTENT of the `envelope.json` tracked
-file at one document version):
+file at one document version; FORMAT.md section 8.2 is normative):
 
 ```json
 {
@@ -210,112 +212,99 @@ file at one document version):
   "schema_version": "0.1",
   "kind": "odf",
   "zip": {
-    "comment": "",
+    "archive_prefix_hex": "",
+    "archive_comment_hex": "",
+    "central_directory_suffix_hex": "",
+    "end_records_hex": "",
+    "archive_trailing_hex": "",
     "members": [
       {
         "path": "mimetype",
         "member_id": "f0",
         "method": "store",
-        "mimetype_first_stored": true,
-        "crc32": "2b4c1f3a",
-        "uncompressed_size": 39,
+        "crc32": 726238597,
         "compressed_size": 39,
-        "dos_time": "2026-10-08T12:00:00",
+        "uncompressed_size": 39,
+        "dos_time": 0,
+        "dos_date": 0,
         "gp_flags": 0,
         "version_made_by": 20,
         "version_needed": 10,
         "external_attrs": 0,
         "internal_attrs": 0,
-        "data_descriptor": false
+        "local_extra_hex": "",
+        "central_extra_hex": "",
+        "local_header_hex": "",
+        "central_header_hex": ""
       },
       {
         "path": "content.xml",
         "member_id": "f1",
         "method": "deflate",
         "deflate_level": 6,
-        "crc32": "9f3c22ab",
-        "uncompressed_size": 10482,
+        "crc32": 2550136839,
         "compressed_size": 2277,
-        "dos_time": "2026-10-08T12:00:00",
+        "uncompressed_size": 10482,
+        "dos_time": 0,
+        "dos_date": 0,
         "gp_flags": 0,
         "version_made_by": 20,
         "version_needed": 20,
         "external_attrs": 0,
         "internal_attrs": 0,
-        "data_descriptor": false
+        "local_extra_hex": "",
+        "central_extra_hex": "",
+        "local_header_hex": "",
+        "central_header_hex": ""
+      },
+      {
+        "path": "Pictures/img1.png",
+        "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "method": "deflate",
+        "deflate_level": 6,
+        "crc32": 2107501004,
+        "compressed_size": 47980,
+        "uncompressed_size": 48213,
+        "dos_time": 0,
+        "dos_date": 0,
+        "gp_flags": 0,
+        "version_made_by": 20,
+        "version_needed": 20,
+        "external_attrs": 0,
+        "internal_attrs": 0,
+        "local_extra_hex": "",
+        "central_extra_hex": "",
+        "local_header_hex": "",
+        "central_header_hex": "",
+        "compressed_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
       }
-    ]
-  },
-  "binary_members": [
-    {
-      "path": "Pictures/img1.png",
-      "content_sha256": "ab12...",
-      "method": "deflate",
-      "deflate_level": 6,
-      "crc32": "7d9e01cc",
-      "uncompressed_size": 48213,
-      "compressed_size": 47980,
-      "dos_time": "2026-10-08T12:00:00",
-      "stored_compressed": true
     }
-  ]
+  }
 }
 ```
 
-Note on the blob reference: a binary member is identified SOLELY by
-`content_sha256`; the stored blob lives at the member path `blobs/<content_sha256>`
-in the tar (section 6, matching `format-change-proposal.md` section 8.5). There is
-NO separate `store_ref` field -- the blob path is DERIVED from `content_sha256`
-(`blobs/` + the hash), so a distinct reference field would be redundant and is
-omitted. A binary member carries the same ZIP header fields as a text member
-(`method`, `crc32`, sizes, `dos_time`, and `stored_compressed` when its DEFLATE
-cannot be reproduced) so repack writes it byte-identically; its BYTES, however,
-come from the content-addressed blob rather than a reconstructed text part.
+The ordered `zip.members` array contains both tracked text members and binary
+members. Each entry has exactly one content reference: `member_id` for a tracked
+text member or `content_sha256` for a binary body stored at
+`blobs/<content_sha256>`. If exact repacking requires retaining the original
+compressed stream, `compressed_sha256` refers to
+`blobs/<compressed_sha256>`. There is no separate `binary_members` array or
+`stored_compressed` flag; member order and content kind are represented in the
+single FORMAT.md-defined array.
 
 Field notes and the byte-identical obligation:
-- `members` is in the EXACT order the members appear in the ZIP (both local file
-  headers and the central directory order are reproduced from this list). ODF
-  REQUIRES `mimetype` FIRST and STORED (uncompressed); `mimetype_first_stored`
-  and `method: "store"` capture that. OOXML has no mimetype member but carries
-  `[Content_Types].xml`; `kind: "ooxml"` plus the member list reproduce it.
-- `method` -- `"store"` or `"deflate"`. For `deflate`, `deflate_level` (and, if
-  the chosen ZIP crate exposes it, strategy) is recorded. Byte-identical repack of
-  a DEFLATE member REQUIRES reproducing the original compressed stream bit-for-bit;
-  a `store` fallback does NOT preserve byte-identity for a member the original ZIP
-  compressed, because emitting it STORED changes the compression-method field in
-  both the local header and the central directory, the compressed bytes, and
-  `compressed_size` -- that is Option B (semantic identity), which this design
-  rejects (section 9). So the rule is:
-  - At INGEST, for every `deflate` member, the writer MUST VERIFY it can reproduce
-    the original compressed bytes exactly (re-DEFLATE at the recorded level and
-    compare to the member's original compressed stream). If verification SUCCEEDS,
-    repack re-DEFLATEs and the result is byte-identical.
-  - If verification FAILS (the toolchain's DEFLATE does not reproduce the original
-    stream), the writer MUST NOT silently fall back to `store`. It MUST either
-    store the ORIGINAL compressed member stream VERBATIM (see
-    `stored_compressed` below) so repack is a pure byte copy, or FAIL `add_office`
-    with a typed `WalrusError::OfficeNonReproducible` error naming the member and
-    the toolchain. The headline byte-identical AC (FR-OC6 AC1/AC2) is thus never
-    silently downgraded.
-  - A `store` method entry is valid ONLY for a member the ORIGINAL ZIP already
-    stored uncompressed (e.g. the ODF `mimetype`).
-- `stored_compressed` -- an OPTIONAL boolean. When `true`, the member's tracked
-  file holds the member's ORIGINAL COMPRESSED bytes verbatim (not the decompressed
-  XML), and repack copies them without re-compressing. This is the exact-but-
-  opaque path for a `deflate` member whose stream the toolchain cannot reproduce;
-  it trades the per-part splice-diff benefit (FR-OC10) for guaranteed byte-
-  identity. It is the fallback of last resort: text members whose DEFLATE
-  verifies use the decompressed-XML storage (the normal, diff-friendly path), and
-  only an unverifiable member is stored compressed. The design PREFERS re-DEFLATE
-  verification succeeding (the common case for a single pinned toolchain) and uses
-  `stored_compressed` only where it does not.
-- `crc32`, `uncompressed_size`, `compressed_size`, `dos_time`, `gp_flags`,
-  `version_made_by`, `version_needed`, `external_attrs`, `internal_attrs`,
-  `data_descriptor` -- the ZIP header fields that must be reproduced to get the
-  same bytes. These are recorded as data; the repack writes them verbatim rather
-  than letting the ZIP crate recompute them.
-- `binary_members` -- see section 6. Binary members are referenced by content
-  hash (dedup) rather than carrying their bytes inline in the envelope.
+- `members` is in the EXACT ZIP order; member order is not derived from the
+  manifest or filesystem. ODF `mimetype` is first and STORED. OOXML carries
+  `[Content_Types].xml`.
+- `method` is `"store"` or `"deflate"`. A stored member stays stored. The
+  writer verifies whether it can reproduce a DEFLATE stream byte-for-byte; if
+  not, it stores the original compressed stream at
+  `blobs/<compressed_sha256>` rather than silently changing the method.
+- The unsigned integer fields preserve the raw ZIP metadata. Extra fields,
+  descriptors, archive comment, and archive-level byte sequences are retained
+  exactly as lowercase hexadecimal.
+- Unknown envelope keys are retained as JSON values and serialized in stable
+  key order, allowing a writer to round-trip fields it does not interpret.
 - Determinism (FR-OC5 AC1): the envelope is serialised with STABLE key order and
   no wall-clock-at-serialise field, so two ingests of identical input produce
   identical envelope bytes.
@@ -422,13 +411,13 @@ question (b) resolved. Until that lands, this path is not available.
 today). Store each distinct binary member body ONCE, keyed by its content hash
 (`content_sha256`), as an opaque blob member at the tar path `blobs/<content_sha256>`
 (the proposal doc section 8.5 fixes this spelling). The envelope's
-`binary_members[]` references the blob by `content_sha256` per document version;
-the blob path is derived from the hash, so no separate reference field is stored
-(see section 4). An UNCHANGED binary across versions points at the SAME hash
+ordered `zip.members[]` entry references the blob by `content_sha256` per
+document version; the blob path is derived from the hash, so no separate
+reference field is stored (see FORMAT.md section 8.2). An UNCHANGED binary across versions points at the SAME hash
 (stored once, FR-OC7 AC2); a CHANGED binary is a new hash / new blob (FR-OC7 AC3).
 A binary member's original compressed stream is preserved verbatim via
-`stored_compressed` (section 4) when its DEFLATE cannot be reproduced, so repack
-stays byte-identical for binary members too.
+`compressed_sha256` when its DEFLATE cannot be reproduced, so repack stays
+byte-identical for binary members too.
 
 RECOMMENDATION: implement strategy (ii) FIRST, because it needs no format change
 to the splice record and delivers the dedup-across-versions win immediately. Keep
@@ -460,23 +449,18 @@ legacy-encoded text part if one ever appears.
    parse it. Its `zip.members[]` is the AUTHORITATIVE per-version membership and
    ORDER; it agrees member-for-member with the row's key set from step 2 (a
    consistency check: if they diverge, fail with a typed error rather than guess).
-4. For each `member` in the envelope's ordered `members[]`: reconstruct that
-   member tracked file at its aligned index (from the step-2 row) -> the member's
-   uncompressed bytes.
-5. For each `binary_member`: resolve the content hash to its stored blob ->
-   the member's bytes.
+4. For each entry in the envelope's ordered `zip.members[]`, reconstruct its
+   `member_id` at the aligned index from the step-2 row, or resolve its
+   `content_sha256` to the uncompressed content blob.
 6. Write a ZIP stream member-by-member in the envelope's recorded order, using
    the recorded header fields VERBATIM (method, CRC32, sizes, dos_time, flags,
    version fields, external/internal attrs, data-descriptor usage). For ODF,
    write `mimetype` FIRST and STORED. For each `deflate` member whose DEFLATE was
    VERIFIED reproducible at ingest (section 4), re-DEFLATE the reconstructed XML
-   at the recorded level -- this reproduces the original compressed bytes exactly.
-   For a member marked `stored_compressed` (ingest could not reproduce its DEFLATE),
-   copy its stored original compressed bytes VERBATIM, writing the recorded
-   `deflate` method and sizes so the member is byte-identical. A member whose
+   at the recorded level. For a member with `compressed_sha256`, copy its
+   original compressed stream from the content-addressed blob. A member whose
    method is `store` is written uncompressed as recorded. The writer NEVER
-   substitutes `store` for an originally-DEFLATEd member -- that path does not
-   exist (section 4); byte-identity is preserved in every case.
+   substitutes `store` for an originally-DEFLATEd member.
 7. Write the central directory in the recorded order with the recorded fields,
    then the end-of-central-directory record with the recorded comment.
 8. Return the assembled bytes. For the ORIGINAL ingested version this equals the
@@ -497,15 +481,14 @@ in `manifest.rs`:
 
 | File | Responsibility |
 |------|----------------|
-| `office/mod.rs` | Re-exports; `OfficeKind`; the `add_office` / `extract_office` entry points on `Archive` (thin -- delegate to the modules below). No logic beyond dispatch. |
-| `office/detect.rs` | Content-based detection (FR-OC1): ZIP magic, ODF `mimetype`-first sniff, OOXML `[Content_Types].xml` sniff, OLE2 reject. Pure, unit-testable. |
-| `office/zip.rs` | Thin wrapper over the chosen ZIP crate: unpack members (path, bytes, raw header fields) on ingest; write members with verbatim header fields on repack. |
-| `office/envelope.rs` | The envelope-recipe type + serde (section 4), deterministic serialisation, and the parse/build helpers. Pure, unit-testable. |
-| `office/odf.rs` | ODF specifics: the mimetype-first-and-stored rule, ODF media-type table, ODF member conventions. |
-| `office/ooxml.rs` | OOXML/OPC specifics: `[Content_Types].xml`, relation parts, OOXML member conventions. |
-| `office/ingest.rs` | Orchestrates `add_office`: detect -> unpack -> add each member via the existing `Archive::add`/`update` -> build envelope -> record/extend the group + version_map -> handle binary members (section 6). |
-| `office/repack.rs` | Orchestrates `extract_office`: the section-7 procedure. |
-| `office/align.rs` | The version-alignment mapping (section 5). Pure, unit-tested FIRST. |
+| `office.rs` | Feature-gated coordinator and public `detect_office` entry point. |
+| `office/detect.rs` | Content-based ODF/OOXML ZIP detection and OLE2 rejection. |
+| `office/zip.rs`, `office/raw_zip.rs` | ZIP member parsing and preservation/reconstruction of raw headers, descriptors, and archive-level bytes. |
+| `office/ingest.rs` | Transactional `Archive::add_office`: detect, unpack, update tracked text members, store binary payloads, and record group/version metadata. |
+| `office/repack.rs` | Version-aligned extraction, integrity checks, and exact ZIP reconstruction. |
+| `office/compression.rs`, `office/hash.rs` | Reproducible DEFLATE handling and SHA-256 content addressing. |
+| `office_envelope.rs`, `manifest_group.rs` | Envelope recipe and always-available group metadata/accessors. |
+| `office/tests.rs` | Parser, round-trip, persistence, and failure-path tests. |
 
 Grouping TYPES (`DocumentGroup`, `OfficeKind` serde, `groups()`/`group()`
 accessors, group validation) live in `crates/walrus/src/manifest.rs` (or a small
@@ -518,25 +501,26 @@ Cargo plan (`crates/walrus/Cargo.toml`), mirroring the export-backend pattern:
 
 ```toml
 [dependencies]
-zip = { version = "2", optional = true, default-features = false, features = ["deflate"] }
+zip = { version = "~3.0.0", optional = true, default-features = false, features = ["deflate-flate2-zlib-rs"] }
+flate2 = { version = "1", optional = true, default-features = false, features = ["zlib-rs"] }
+sha2 = { version = "0.10", optional = true }
+crc32fast = { version = "1", optional = true }
 
 [features]
-office = ["dep:zip"]
+office = ["dep:zip", "dep:flate2", "dep:sha2", "dep:crc32fast"]
 # (MAY later split: container-odf / container-ooxml, both -> dep:zip)
 ```
 
-ZIP crate choice (LOCKED pending MSRV check): `zip = "2"` (the `zip-rs`
-`zip` crate), pure-Rust, actively maintained, exposes per-member method / raw
-header control sufficient for verbatim repack, and `default-features = false`
-keeps its own optional codecs out unless named. The EXACT minor and its MSRV MUST
-be verified against the workspace MSRV 1.95 at implementation time (as the export
-backends do); if `zip 2.x` requires > 1.95, either pin the newest `zip` that
-builds on 1.95 or raise the WORKSPACE `rust-version` and record the forcing crate
-in `ROADMAP.md` and a `Cargo.toml` comment (the established procedure). If `zip`
-cannot reproduce byte-exact DEFLATE for the recorded level across toolchains
-(section 10), the fallback is to store the member's ORIGINAL COMPRESSED bytes
-verbatim (`stored_compressed`, section 4) so repack is a pure byte copy -- NOT to
-re-emit an originally-DEFLATEd member as `store`, which would break byte-identity.
+The ZIP crate, raw DEFLATE helper, SHA-256 implementation, and CRC-32 helper are
+optional and pure Rust. `zip` exposes per-member offsets and metadata needed for
+verbatim repack; `flate2` uses the same `zlib-rs` backend to test whether a raw
+DEFLATE stream is reproducible; `sha2` supplies content-addressed blob keys; and
+`crc32fast` verifies reconstructed member payloads. Their MSRVs are below the
+workspace MSRV 1.95. If `zip` cannot reproduce byte-exact DEFLATE for the recorded level across
+toolchains (section 10), the fallback is to store the member's ORIGINAL
+COMPRESSED bytes verbatim using `compressed_sha256` (FORMAT.md section 8.2) so
+repack is a pure byte copy -- NOT to re-emit an originally-DEFLATEd member as
+`store`, which would break byte-identity.
 This keeps the headline byte-identical AC intact at a size cost on the
 unverifiable member.
 
@@ -583,7 +567,7 @@ Option A -- PRESERVE BYTE-IDENTICAL (CHOSEN). Record a per-member envelope recip
 so repack reproduces the original office file byte-for-byte. For a DEFLATE member,
 byte-identity requires reproducing the compressed stream exactly: the writer
 VERIFIES re-DEFLATE at ingest and, when it cannot, stores the original compressed
-bytes verbatim (`stored_compressed`, section 4) or FAILS -- it NEVER re-emits an
+bytes verbatim by `compressed_sha256` (section 4) -- it NEVER re-emits an
 originally-compressed member as STORED (that would be Option B). This keeps the
 headline INV-3 / FORMAT.md section-5 byte-identical guarantee intact for the whole
 office file, which is what makes Walrus trustworthy for round-tripping documents
@@ -601,22 +585,11 @@ REJECTED; Option A is chosen.
 ## 10. Risks / open questions
 
 - NON-DETERMINISTIC DEFLATE. Byte-identical repack of a `deflate` member requires
-  re-DEFLATE at the recorded level to reproduce the original compressed stream
-  bit-for-bit. Different zlib/miniz builds can produce different bytes for the
-  same level. Mitigation (section 4, NOT a `store` substitution): the writer
-  VERIFIES at ingest that re-DEFLATE reproduces the member's original compressed
-  bytes; if it does, repack re-DEFLATEs exactly; if it does NOT, the writer stores
-  the member's ORIGINAL COMPRESSED bytes verbatim (`stored_compressed: true`) so
-  repack is a pure byte copy, or FAILS `add_office` with a typed
-  `WalrusError::OfficeNonReproducible` error -- it NEVER falls back to `store` and
-  claims success, because emitting an originally-DEFLATEd member as STORED changes
-  the method field, compressed bytes, and `compressed_size` and would silently
-  downgrade to Option-B semantic identity (rejected, section 9). The
-  `stored_compressed` fallback keeps FR-OC6 byte-identity intact at a size cost
-  and the loss of that member's splice-diff benefit. The fixtures (section 11)
-  pin which path each member takes at implementation time. This is the primary
-  risk to FR-OC6 and implementation verifies it against the chosen ZIP crate
-  FIRST.
+  reproducing the original compressed stream bit-for-bit. Different compressor
+  implementations may emit different bytes. Mitigation: ingest verifies the
+  selected DEFLATE levels; when none reproduce the exact stream, it stores the
+  original stream by `compressed_sha256` rather than changing the method. This
+  preserves byte identity at a storage cost.
 - OOXML vs ODF packing differences. ODF mandates `mimetype` first + stored; OOXML
   has `[Content_Types].xml` and relation parts and no mimetype member. The
   envelope's ordered member list + `kind` cover both, but each needs its own
@@ -641,7 +614,7 @@ REJECTED; Option A is chosen.
 
 Per the testing steering rule, the pure-logic ACs are TDD'd (failing test first):
 
-- VERSION ALIGNMENT (`office/align.rs`, FR-OC4): pure unit tests over hand-built
+- VERSION ALIGNMENT (FR-OC4): tests over hand-built
   `version_map` tables -- doc version 0 maps all present members to 0; an older
   doc version maps an unchanged member to its then-current index; a member id
   absent from a row resolves to "not present" (not an index), with repack
@@ -649,13 +622,13 @@ Per the testing steering rule, the pure-logic ACs are TDD'd (failing test first)
   symmetric REMOVE case (newer rows omit a member removed later) resolve to
   exactly the member set that existed at that version; out-of-range is a typed
   error. Written FIRST, watched fail, then implemented.
-- ENVELOPE ROUND-TRIP (`office/envelope.rs`, FR-OC5): build -> serialise -> parse
-  -> equal; deterministic byte-stable serialisation; the two-save delta is a
-  small net splice (assert the stored record size is bounded).
-- BYTE-IDENTICAL REPACK (FR-OC6, HEADLINE): integration tests in
-  `crates/walrus/tests/office_roundtrip.rs` over REAL small captured fixtures
-  under `crates/walrus/tests/fixtures/` -- a minimal `.odt` and a minimal
-  `.docx`. `add_office` then `extract_office(Index(0))` must `assert_eq!` the full
+- ENVELOPE ROUND-TRIP (FR-OC5): validate deterministic envelope serialisation,
+  round-trip parsing, and preservation of unknown JSON fields; the two-save
+  envelope delta is a small net splice.
+- BYTE-IDENTICAL REPACK (FR-OC6, HEADLINE): library unit tests and CLI acceptance
+  tests use deterministic, locally generated minimal valid ODF/OOXML fixtures in
+  `tests/fixtures/office/` (not documents captured from office applications).
+  `add_office` then `extract_office(Index(0))` must `assert_eq!` the full
   byte vector against the original; a two-version ingest then extract at the older
   version must reproduce the older original (FR-OC6 AC3). The MEMBERSHIP-CHANGE
   round-trip (FR-OC6 AC4): ingest v1, ingest v2 that ADDS a member, then extract
@@ -670,8 +643,11 @@ Per the testing steering rule, the pure-logic ACs are TDD'd (failing test first)
 - BOUNDARY PROOF (FR-OC8 / NFR-3): `cargo tree -p walrus-fmt` (default) shows no
   `zip`; `cargo tree -p walrus-fmt --features office` shows `zip`; neither shows a
   GUI/app crate. Captured as the gate's dependency-boundary check.
-- SIZE / DELTA (FR-OC10): assert a single stored version is <= the original office
-  file size, and a two-version archive is far smaller than two full office files.
+- SIZE / DELTA (FR-OC10): assert no monolithic source ZIP is stored alongside
+  tracked members; only changed text members gain versions; unchanged binary
+  payloads deduplicate; and non-reproducible compressed streams are retained only
+  by their content hash. Do not treat a universal archive-size ratio as a
+  correctness guarantee.
 - CLI (FR-OC9): `walx extract` / `cat` and `walrus add` office behaviour verified
   over fixtures (not only unit tests), behind the `office` feature.
 
@@ -680,7 +656,15 @@ GUI: none -- this feature is library + CLI only, no `walker` touch, so no
 
 ---
 
-## 12. Review responses
+## 12. Historical review responses (superseded where noted)
+
+The review-response notes below preserve decisions made during planning. Where
+they describe obsolete field names or proposed failure behavior, the current
+contract is the authoritative `FORMAT.md` section 8 and the implementation-
+aligned sections 4, 7, 8, 9, and 10 above. In particular, `binary_members`,
+`stored_compressed`, and `OfficeNonReproducible` are superseded by the ordered
+`zip.members[]` schema, optional `compressed_sha256`, and content-addressed
+compressed-stream fallback.
 
 Iteration 3 -- responses to `office-container/review.json` (verdict
 CHANGES_REQUESTED) and the reasoning in `office-container/review.md`.

@@ -1,7 +1,8 @@
 # Office container requirements -- ODF / OOXML unpack-version-repack
 
-Status: REQUIREMENTS (planning). Derived from the authoritative design in
-`FORMAT.md` (0.1 draft), the existing stream contract in
+Status: REQUIREMENTS (active implementation). The normative office-format
+contract is FORMAT.md section 8 (0.1 draft), and these requirements are derived
+from that contract, the existing stream contract in
 `.agents/tasks/requirements-walrus.md`, and the owner's decision thread captured
 in `docs/proposals/office-container/decisions.md`. This document is the shared
 contract for the OFFICE-CONTAINER work stream. It slots ALONGSIDE
@@ -77,14 +78,15 @@ This stream does NOT touch `crates/walker`.
 ## 1. Cross-stream / API impact
 
 The office feature EXTENDS the `walrus-fmt` public surface documented in
-`requirements-walrus.md` section 1 without changing any existing signature. All
-new items are compiled ONLY under the `office` feature; the default build is
-byte-for-byte unchanged, so Walker and any existing embedder are unaffected.
+`requirements-walrus.md` section 1 without changing any existing signature.
+Plain-serde group types and read accessors are always compiled; ZIP parsing,
+ingest, and repack entry points are behind the optional `office` feature. The
+default build links no ZIP dependency, so existing embedders remain lean.
 
 Illustrative new surface (finalise in `design.md`):
 
 ```
-// New, behind #[cfg(feature = "office")]:
+// Group metadata is always compiled; byte processing is office-feature gated.
 
 // A logical office document: a named group of member tracked files plus the
 // tracked file that holds its envelope recipe.
@@ -93,13 +95,14 @@ pub struct DocumentGroup { /* id, name, kind, member_ids, envelope_id,
 pub enum OfficeKind { Odf, Ooxml }   // which packing convention applies
 
 impl Archive {
+    // Content-based ODF/OOXML detection; ZIP code is office-feature gated.
+    pub fn detect_office(bytes: &[u8]) -> Result<Option<OfficeKind>>;
+
     // Ingest: unpack an office file's ZIP members, add each as a tracked file,
     // build the envelope recipe, and record a DocumentGroup tying them together.
     // Reuses the existing add/update storage path per member -- NOT a new
-    // storage primitive.
-    pub fn add_office(&mut self, name: &str, bytes: &[u8],
-                      generations: Option<u32>, dir: Option<Direction>)
-        -> Result<()>;
+    // storage primitive. Office group histories are retained without trimming.
+    pub fn add_office(&mut self, name: &str, bytes: &[u8]) -> Result<()>;
 
     // Extract: reconstruct every member at the document version that maps to
     // `v`, reconstruct the envelope recipe, and replay it to emit a
@@ -170,6 +173,9 @@ text files; binary members are handled per FR-OC7.
 - AC4 Member ingest order is deterministic (members ingested in the archive's
   recorded member order, FR-OC5), so repeated ingests of identical input produce
   identical tracked-file state.
+- AC5 Ingest rejects an office ZIP whose total declared or observed
+  uncompressed member data exceeds 1 GiB, using a typed size-limit error before
+  reading beyond that limit.
 
 ### FR-OC3 Document-group manifest concept
 Add an additive `groups` concept to the manifest tying N member tracked files
@@ -181,12 +187,11 @@ envelope-recipe tracked file (FR-OC5) and carrying the version-alignment map
 - AC2 A manifest with NO groups (a pre-feature archive) parses unchanged and
   `groups()` yields nothing -- backward compatibility.
 - AC3 `group(sel)` resolves a group by its logical name or id; a group's
-  `member_ids` all reference existing tracked-file ids and its `envelope_id`
-  references an existing tracked file (validated). `member_ids` is the UNION of
-  every member ever seen across all document versions (used for validation and
-  listing); it is NOT the per-version member set -- the member set for a given
-  document version is defined by that version's envelope / version-alignment row
-  (FR-OC4), not by `member_ids`.
+  `member_ids` are the UNION of tracked TEXT member ids ever seen across all
+  document versions, and its `envelope_id` references a tracked file (validated).
+  Binary members are content-addressed blobs, not tracked files. The version map
+  records text-member indices and separately records `envelope_index`; each
+  version's envelope defines complete ZIP membership and order.
 - AC4 A group-UNAWARE reader (one built without the office feature, or an older
   reader) still reads every member tracked file as a plain tracked file: the
   members are real `files/<id>/` entries, not hidden inside the group. Removing
@@ -199,9 +204,11 @@ section 5) and members change at different rates. The chosen rule (see
 `design.md`) is a per-group DOCUMENT-VERSION TABLE: each saved document version
 records, for every member id, the member index that was current at that document
 save.
-- AC1 For a group whose member A has 3 saves and member B has 1 save, document
-  version 0 (current) maps to {A:0, B:0}; an older document version maps each
-  member to the index it held at THAT document save, even though B never changed.
+- AC1 For a group whose text member A has 3 saves and member B has 1 save,
+  document version 0 (current) maps to {A:0, B:0}; an older document version
+  maps each text member and the envelope to the index held at THAT document save,
+  even if a member did not change. Binary payloads are selected by the hash in
+  the version's envelope.
 - AC2 Resolving a `Version` against a group yields a per-member index set over
   ONLY the members present at that document version. A member id ABSENT from the
   resolved version's row is NOT a ZIP member at that document version and MUST NOT
@@ -226,13 +233,14 @@ save.
 
 ### FR-OC5 Envelope recipe (content + storage as tracked text)
 Define a per-document ENVELOPE RECIPE that captures everything needed to repack
-the office ZIP byte-identically: ordered member list; per-member compression
-method and the parameters needed to reproduce the compressed stream; per-member
-timestamps, CRC32, uncompressed/compressed sizes, external attributes, and
-general-purpose flags; the ODF rule that `mimetype` is first and STORED
-(uncompressed); and the OOXML `[Content_Types].xml` convention. The recipe is
-stored as its OWN tracked TEXT file (working name `envelope.json`) versioned
-alongside the parts.
+the office ZIP byte-identically: one ordered list of all text and binary members,
+their payload references, compression parameters, exact local and central
+metadata, data descriptors, archive comment, and other archive-level bytes.
+The ODF rule that `mimetype` is first and STORED and the OOXML
+`[Content_Types].xml` convention are preserved. The recipe is stored as its OWN
+tracked TEXT file (`envelope.json`) versioned alongside the parts. Unsupported
+ZIP structures must be rejected with a typed error rather than reconstructed
+non-identically.
 - AC1 The envelope recipe serialises to deterministic text (stable key order) so
   two ingests of identical input produce identical envelope bytes.
 - AC2 The envelope recipe is stored as a tracked text file and reconstructs at
@@ -250,10 +258,10 @@ alongside the parts.
 reconstructs the envelope recipe, and replays it to emit an office file
 BYTE-IDENTICAL to the originally ingested bytes. This is Option A (preserve
 byte-identical) -- see `decisions.md`.
-- AC1 For a captured real small `.odt` fixture, `add_office` then
+- AC1 For a valid small `.odt` fixture under `tests/fixtures/`, `add_office` then
   `extract_office(group, Version::Index(0))` reproduces the original `.odt`
   bytes EXACTLY (`assert_eq!` on the full byte vector).
-- AC2 For a captured real small `.docx` fixture, the same round-trip reproduces
+- AC2 For a valid small `.docx` fixture under `tests/fixtures/`, the same round-trip reproduces
   the original `.docx` bytes EXACTLY.
 - AC3 The round-trip holds for an OLDER document version too: ingest v1, ingest
   v2 of the same document, then `extract_office(group, <v1>)` reproduces the
@@ -278,8 +286,8 @@ Define how binary members are stored and DECLARE the dependency on the FORMAT.md
 section 7 open question (b) (a binary / base64 `insert` form).
 - AC1 Ingesting an office document containing a binary member (e.g. a PNG in an
   `.odt`) does NOT attempt to diff that member and does NOT error out the whole
-  ingest; the binary member is stored by the chosen binary strategy (see
-  `design.md`: dedup-by-content whole-blob members, recommended).
+  ingest; it stores the uncompressed payload as a content-addressed blob and
+  references it from the ordered version envelope.
 - AC2 An UNCHANGED binary member across two document versions is stored ONCE and
   referenced from both versions (dedup by content hash), NOT re-stored per
   version.
@@ -302,8 +310,8 @@ The ZIP codec and all office logic live behind the `office` feature (INV-2).
   points absent (or, for the always-compiled grouping types, present but inert),
   and links no GUI/app crate.
 - AC4 Enabling `office` adds no GUI/app dependency (no egui/eframe/ff-*): the
-  feature pulls in only the ZIP crate (and its transitive deps), asserted by
-  `cargo tree`.
+  feature pulls in the ZIP crate plus DEFLATE, SHA-256, and CRC-32 helpers
+  required for exact repack and content addressing, asserted by `cargo tree`.
 
 ### FR-OC9 CLI surface additions
 Expose office ingest/extract through the CLIs only where it does not break the
@@ -325,45 +333,47 @@ primitive beyond those entry points.
   built" error if asked to ingest an office file, never a panic.
 
 ### FR-OC10 Size and delta expectations
-Document and assert the storage behaviour so the feature's value is verifiable
-and its honest caveat is explicit.
-- AC1 A SINGLE stored version of an office document (XML parts stored decompressed
-  once, then the whole outer tar zstd-compressed) is comparable to or smaller
-  than the original office file. The XML is stored decompressed exactly ONCE: the
-  original compressed ZIP is NOT kept alongside the unpacked parts.
-- AC2 Across versions, a text-part change is stored as a small net splice, so a
-  two-version archive is dramatically smaller than two full office files.
-- AC3 Honest caveat asserted: a CHANGED binary member is re-stored (binary does
-  not delta), and an UNCHANGED binary member is stored once and referenced
-  (FR-OC7 AC2), so binary-heavy documents see less saving than text-heavy ones.
-- AC4 There is no double compression: parts are stored decompressed inside the
-  uncompressed inner tar and compressed ONCE by the outer codec; the design
-  states the rule that an office document's parts are never re-compressed per
-  part before the outer codec.
+Make storage behaviour verifiable without promising a general archive-size ratio,
+which depends on the input ZIP compressor, document content, and container
+overhead.
+- AC1 Ingest does not store the complete source ZIP as an opaque blob alongside
+  its tracked members. Text members and the envelope are tracked files; binary
+  payloads and non-reproducible compressed streams use only their documented
+  content-addressed blobs.
+- AC2 On a subsequent save, only changed text members and the envelope gain
+  versions; unchanged text members do not gain duplicate versions, and text
+  changes use the ordinary splice history.
+- AC3 An unchanged binary member is stored once and referenced from each version;
+  a changed binary member is stored as a new whole blob (FR-OC7 AC2/AC3).
+- AC4 Repacking uses the source compressed stream only when the recorded DEFLATE
+  settings cannot reproduce it; it never retains a second opaque copy of the
+  entire office ZIP.
 
 ## 3. Non-functional requirements
-- NFR-1 Each new `.rs` under 400 non-test lines; split the office logic by
-  concern (`office/mod.rs`, `office/odf.rs`, `office/ooxml.rs`,
-  `office/envelope.rs`, `office/zip.rs`, ingest/extract entry points) rather than
-  growing one file.
+- NFR-1 Each new `.rs` under 400 non-test lines; keep office detection,
+  compression, hashing, ZIP parsing, ingest, and repack split by concern.
 - NFR-2 `cargo fmt -- --check` and `cargo clippy -- -D warnings` clean.
 - NFR-3 Boundary proof: the default `cargo build -p walrus-fmt` links no ZIP /
-  office crate; `cargo tree` default vs `--features office` asserts it (FR-OC8).
+  office / hash / checksum / DEFLATE helper crate; `cargo tree` default vs
+  `--features office` asserts it (FR-OC8).
 - NFR-4 Byte-identical determinism: the repack round-trip (FR-OC6) and the
   version-alignment mapping (FR-OC4) are deterministic -- no HashMap iteration
-  order, no system time, no external files outside `tests/fixtures/`. Captured
-  office fixtures live under `tests/fixtures/`.
+  order, no system time, no external files outside `tests/fixtures/`.
+  Deterministic minimal ODF/OOXML fixtures are generated locally and live under
+  `tests/fixtures/office/`; they are not captured from office applications.
 - NFR-5 Full gate (`cargo gate --build`) is the owner's manual step; scoped
   `-p walrus-fmt` / `-p walx` / `-p walrus-cli` are the inner loop.
 - NFR-6 ASCII-only source and docs; no unwrap/expect in library code (typed
   errors via `crate::Result` / `WalrusError`).
+- NFR-7 Office ZIP processing enforces the 1 GiB aggregate uncompressed-size
+  limit selected by the owner; the limit applies before allocating or reading
+  member contents beyond the cap.
 
 ## 4. Prerequisites / dependencies
-- P1 (SPEC-FIRST, INV-1) The FORMAT.md revision in
-  `office-container/format-change-proposal.md` -- the document-group concept, the
-  envelope-recipe member, the version-alignment rule, and the binary-member
-  handling -- MUST be pasted into `FORMAT.md` and reviewed BEFORE any office code
-  lands. Code must not define a format the spec has not defined.
+- P1 (SPEC-FIRST, INV-1) DONE on `feature/office-container`: FORMAT.md section 8
+  defines document groups, envelope metadata, version alignment, and binary
+  attachments before office implementation code. It is authoritative over the
+  historical proposal text.
 - P2 FORMAT.md section 7 open question (b) (a binary / base64 `insert` form) must
   be DECIDED for whole-blob binary VERSIONING inside a `.wchg`. Until it is, the
   implementation uses the dedup-by-content attachment fallback (FR-OC7 AC4);
@@ -380,22 +390,26 @@ and its honest caveat is explicit.
 Spec-first, then additive types, then ingest, then repack, then CLI, then
 fixtures/tests. Keep `walrus-fmt` GUI-free throughout.
 
-1. SPEC: land the FORMAT.md revision (P1) from the proposal doc. (Owner edits
-   FORMAT.md; this stream only produces the proposal.)
-2. TYPES: add the additive `DocumentGroup` manifest types + `groups()`/`group()`
-   accessors + validation (FR-OC3). Always-compiled, backward-compatible.
-3. ENVELOPE + VERSION-ALIGNMENT (pure logic, TDD first): the envelope-recipe
-   schema and its serde (FR-OC5), and the version-alignment mapping (FR-OC4).
-4. INGEST (behind `office`): office detection (FR-OC1), ZIP unpack, add-each-
-   member, build envelope, record group (FR-OC2); binary-member strategy
-   (FR-OC7).
-5. REPACK (behind `office`, HEADLINE TDD): reconstruct members + envelope and
-   replay to byte-identical office bytes (FR-OC6).
-6. CLI: route `walx extract`/`cat` and `walrus add` through the office entry
-   points behind the feature (FR-OC9).
-7. FIXTURES / TESTS: capture a real small `.odt` and `.docx` under
-   `tests/fixtures/`; the byte-identical round-trip integration tests; the
-   boundary proof via `cargo tree` (FR-OC8); the size/delta assertions (FR-OC10).
+1. [DONE] SPEC: add and clarify the FORMAT.md section 8 contract from the
+   proposal before implementation.
+2. [DONE] TYPES: add the additive `DocumentGroup` manifest types +
+   `groups()`/`group()` accessors + validation (FR-OC3). Always-compiled,
+   backward-compatible; group version selection uses envelope checkpoints and
+   timestamps when requested.
+3. [DONE] ENVELOPE + VERSION-ALIGNMENT (pure logic, TDD first): the
+   envelope-recipe schema and serde validation (FR-OC5), and version selection
+   against document rows and envelope metadata (FR-OC4).
+4. [DONE] ZIP CORE (behind `office`): office detection (FR-OC1), ZIP
+   parsing, add-each-member, build envelope, record group (FR-OC2), binary
+   attachments (FR-OC7), and byte-identical repack (FR-OC6).
+5. [DONE] REPACK (behind `office`, HEADLINE TDD): reconstruct members + envelope
+   and replay to byte-identical office bytes (FR-OC6).
+6. [DONE] CLI: route `walx extract`/`cat` and `walrus add` through the office
+   entry points behind the feature (FR-OC9).
+7. [IN PROGRESS] FIXTURES / VALIDATION: deterministic minimal ODF and OOXML
+   fixtures live under `tests/fixtures/office/`; CLI round trips are covered.
+   Finish scoped feature-boundary and structural storage/delta checks
+   (FR-OC8 / FR-OC10).
 
 ## 6. Notes on containerisation strategy (owner's thread)
 The owner evaluated three ways to contain an office document's parts and chose

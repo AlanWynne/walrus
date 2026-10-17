@@ -11,6 +11,7 @@
 //! The whole ustar archive is zstd-compressed (the default outer codec, so a
 //! write-then-read round-trip matches what `container::sniff_codec` reads back).
 
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::manifest::Manifest;
@@ -55,8 +56,12 @@ pub(crate) struct FileParts<'a> {
 /// Returns [`crate::WalrusError::Json`] if the manifest, a header, or a record
 /// fails to serialise, and [`crate::WalrusError::Io`] on a tar/zstd framing
 /// failure.
-pub(crate) fn write_archive(manifest: &Manifest, files: &[FileParts<'_>]) -> Result<Vec<u8>> {
-    let tar_bytes = build_tar(manifest, files)?;
+pub(crate) fn write_archive(
+    manifest: &Manifest,
+    files: &[FileParts<'_>],
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let tar_bytes = build_tar(manifest, files, blobs)?;
     zstd::stream::encode_all(&tar_bytes[..], ZSTD_LEVEL).map_err(Into::into)
 }
 
@@ -64,7 +69,11 @@ pub(crate) fn write_archive(manifest: &Manifest, files: &[FileParts<'_>]) -> Res
 
 /// Build the uncompressed ustar archive: `manifest.json` first, then each
 /// file's `base` and `.wchg` members in manifest order.
-fn build_tar(manifest: &Manifest, files: &[FileParts<'_>]) -> Result<Vec<u8>> {
+fn build_tar(
+    manifest: &Manifest,
+    files: &[FileParts<'_>],
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Result<Vec<u8>> {
     let manifest_json = serde_json::to_vec_pretty(manifest)?;
 
     let mut builder = tar::Builder::new(Vec::new());
@@ -76,6 +85,9 @@ fn build_tar(manifest: &Manifest, files: &[FileParts<'_>]) -> Result<Vec<u8>> {
         let wchg_path = format!("files/{}/{}.wchg", file.id, file.wchg_name);
         let wchg_bytes = encode_wchg(file.header, file.records)?;
         append_member(&mut builder, &wchg_path, &wchg_bytes)?;
+    }
+    for (hash, content) in blobs {
+        append_member(&mut builder, &format!("blobs/{hash}"), content)?;
     }
     let archive = builder.into_inner()?;
     Ok(archive)

@@ -48,6 +48,29 @@ pub fn run(tokens: &[String]) -> Result<u8> {
     let mut archive = open_or_create(&args)?;
 
     for source in &sources {
+        #[cfg(feature = "office")]
+        if walrus_fmt::detect_office(&source.bytes)?.is_some() {
+            let previous_versions = archive
+                .group(&source.name)
+                .map(|group| group.version_map.len());
+            archive
+                .add_office(&source.name, &source.bytes)
+                .with_context(|| format!("adding office document '{}'", source.name))?;
+            if previous_versions.is_some_and(|count| {
+                archive
+                    .group(&source.name)
+                    .is_some_and(|group| group.version_map.len() == count)
+            }) {
+                eprintln!("walrus: {}: no change, not versioned", source.name);
+            }
+            continue;
+        }
+
+        #[cfg(not(feature = "office"))]
+        if looks_like_office(&source.bytes) {
+            anyhow::bail!("office support not built; rebuild walrus with --features office");
+        }
+
         // A file ALREADY tracked whose content is byte-identical records no new
         // version (CLI-DESIGN 5.4): detect by comparing its count across the
         // save. A brand-new file (not previously tracked) is a genuine create.
@@ -271,4 +294,20 @@ fn parse_generations(value: &str) -> Result<u32, CliError> {
     value
         .parse::<u32>()
         .map_err(|_| CliError::usage(format!("invalid --generations value '{value}'")))
+}
+
+#[cfg(not(feature = "office"))]
+fn looks_like_office(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+        return true;
+    }
+    let is_zip = bytes.windows(4).any(|window| window == b"PK\x03\x04");
+    let has_ooxml_signature = bytes
+        .windows(b"[Content_Types].xml".len())
+        .any(|window| window == b"[Content_Types].xml");
+    let has_odf_signature = bytes.windows(8).any(|window| window == b"mimetype")
+        && bytes
+            .windows(b"application/vnd.oasis.opendocument".len())
+            .any(|window| window == b"application/vnd.oasis.opendocument");
+    is_zip && (has_ooxml_signature || has_odf_signature)
 }

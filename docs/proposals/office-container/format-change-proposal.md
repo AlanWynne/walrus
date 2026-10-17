@@ -1,11 +1,12 @@
 # FORMAT.md change proposal -- office document groups, envelope recipe, version alignment, binary members
 
-Status: PROPOSAL (spec-first, INV-1). This document is NOT FORMAT.md; it is the
-normative text to be PASTED INTO FORMAT.md during the implementation phase,
-BEFORE any office code lands. It is written in FORMAT.md's existing voice
-(normative MUST / SHOULD / MAY) with proposed new section numbers so it drops in
-cleanly. Do NOT edit FORMAT.md as part of the design task -- only produce this
-proposal.
+Status: ACCEPTED PROPOSAL; FORMAT.md section 8 is authoritative. This file
+records the original proposed text for design history. During implementation,
+the normative schema was clarified in FORMAT.md: ZIP members use one ordered
+list with explicit text/blob payload references, the version map records the
+envelope index separately, and exact-byte preservation includes raw ZIP metadata
+plus typed rejection of unsupported structures. Do not copy this proposal
+verbatim over the adopted specification.
 
 ASCII only (`->`, `<->`, `<=`, `>=`, `--`) per the documentation steering rule.
 

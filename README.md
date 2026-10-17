@@ -96,6 +96,10 @@ optional cargo features so a playback-only embedder stays lean:
 walrus-fmt = { git = "...", features = ["export-html", "export-md"] }
 ```
 
+ODF and OOXML ZIP-container support is also opt-in. Enable the `office` feature
+on `walrus-fmt`, `walrus-cli`, or `walx` to detect, ingest, and byte-identically
+extract supported office documents; the default build remains ZIP-free.
+
 ## Relationship to FileForgeWorkbench (FFWB)
 
 Walrus is a standalone project. FFWB is simply one consumer: when FFWB adds
@@ -129,6 +133,6 @@ at your option.
 
 Pre-1.0. The format in `FORMAT.md` is a 0.1 draft. The multi-file format,
 reconstruct engine, mutate/diff surface, search, both CLIs, and the `walker` GUI
-are all implemented and on `main`. See `ROADMAP.md` for the current state and the
-prioritized forward plan (remaining items are coverage, hygiene, and optional
-features -- no known defects block a release).
+are all implemented and on `main`. ODF/OOXML support is being completed on its
+own feature branch. See `ROADMAP.md` for the current state and prioritized
+forward plan.

@@ -82,7 +82,11 @@ impl Archive {
             manifest.log_direction = new_variant.log_direction().to_string();
         }
 
-        Ok(Archive::from_directories(manifest, new_files))
+        Ok(Archive::from_directories(
+            manifest,
+            new_files,
+            self.blobs_ref().clone(),
+        ))
     }
 
     /// Borrow the parsed per-file entry for `id` (present by construction, since
